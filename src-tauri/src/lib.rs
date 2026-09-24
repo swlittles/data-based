@@ -1,0 +1,139 @@
+mod commands;
+mod crypto;
+mod error;
+mod portable;
+mod profiles;
+mod shell;
+
+use commands::AppState;
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(desktop)]
+            {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+            }
+            {
+                app.handle().plugin(tauri_plugin_dialog::init())?;
+                app.handle().plugin(tauri_plugin_opener::init())?;
+            }
+
+            // macOS: add "About Mongo Bongo" and "Check for Updates..." to the
+            // system Help menu; both forward to the webview via menu-action.
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, MenuItemKind, Submenu};
+                let handle = app.handle();
+                let menu = Menu::default(handle)?;
+                let about =
+                    MenuItem::with_id(handle, "about-app", "About Mongo Bongo", true, None::<&str>)?;
+                let updates = MenuItem::with_id(
+                    handle,
+                    "check-updates",
+                    "Check for Updates...",
+                    true,
+                    None::<&str>,
+                )?;
+                let help = menu.items()?.into_iter().find_map(|item| match item {
+                    MenuItemKind::Submenu(s)
+                        if s.text().map(|t| t == "Help").unwrap_or(false) =>
+                    {
+                        Some(s)
+                    }
+                    _ => None,
+                });
+                match help {
+                    Some(submenu) => submenu.prepend_items(&[&about, &updates])?,
+                    None => {
+                        let submenu =
+                            Submenu::with_items(handle, "Help", true, &[&about, &updates])?;
+                        menu.append(&submenu)?;
+                    }
+                }
+                app.set_menu(menu)?;
+            }
+
+            let data_dir = app.path().app_data_dir()?;
+            let (crypto, degraded) = crypto::Crypto::init(&data_dir)
+                .map_err(|e| format!("could not initialize secret storage: {e}"))?;
+            let store = profiles::ProfileStore::load(&data_dir)
+                .map_err(|e| format!("could not load connections: {e}"))?;
+            app.manage(AppState {
+                sessions: tokio::sync::Mutex::new(commands::Sessions::default()),
+                store: std::sync::Mutex::new(store),
+                crypto: std::sync::Mutex::new(crypto),
+                data_dir,
+                degraded: std::sync::atomic::AtomicBool::new(degraded),
+                adhoc_seq: std::sync::atomic::AtomicU64::new(0),
+                jobs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            });
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            use tauri::Emitter;
+            let id = event.id().0.as_str();
+            if id == "about-app" || id == "check-updates" {
+                let _ = app.emit("menu-action", id.to_string());
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::app_env,
+            commands::security_info,
+            commands::set_secret_backend,
+            commands::list_connections,
+            commands::save_connection,
+            commands::delete_connection,
+            commands::test_connection,
+            commands::connect,
+            commands::connect_input,
+            commands::switch_workspace,
+            commands::disconnect_workspace,
+            commands::disconnect,
+            commands::connection_uri,
+            commands::export_connections,
+            commands::inspect_connection_import,
+            commands::import_connections,
+            commands::server_info,
+            commands::list_databases,
+            commands::list_collections,
+            commands::find_documents,
+            commands::count_documents,
+            commands::aggregate_collection,
+            commands::aggregate_stage_stats,
+            commands::bulk_update,
+            commands::bulk_delete,
+            commands::db_relations,
+            commands::current_ops,
+            commands::kill_op,
+            commands::profiler_status,
+            commands::set_profiler,
+            commands::profiler_entries,
+            commands::server_status_light,
+            commands::insert_document,
+            commands::replace_document,
+            commands::delete_document,
+            commands::drop_collection,
+            commands::clear_collection,
+            commands::duplicate_collection,
+            commands::copy_collection,
+            commands::cancel_job,
+            commands::diff_collections,
+            commands::sync_documents,
+            commands::list_indexes,
+            commands::create_index,
+            commands::drop_index,
+            commands::collection_stats,
+            commands::explain_query,
+            commands::collection_fields,
+            commands::analyze_schema,
+            commands::export_collection,
+            commands::import_documents,
+            commands::run_shell,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

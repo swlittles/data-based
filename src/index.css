@@ -1,0 +1,40 @@
+@import "./styles/theme-kit.css";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tailwind's preflight resets borders to 0 with `border-style: solid`; give
+   every element the hairline colour so `border` utilities read the token. */
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+}
+
+@layer utilities {
+  .font-data {
+    font-family: var(--mono);
+    font-size: var(--fs-doc);
+    line-height: var(--lh-doc);
+  }
+}
+
+/* Splash animation */
+@keyframes splash-mark {
+  0% { opacity: 0; transform: scale(0.82) translateY(8px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes splash-rise {
+  0% { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.splash-mark { animation: splash-mark 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.splash-rise { animation: splash-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .splash-mark, .splash-rise { animation: none; }
+}
+
+/* Monaco: let the theme tokens paint the editor chrome */
+.monaco-editor, .monaco-editor .margin, .monaco-editor-background {
+  background-color: transparent !important;
+}

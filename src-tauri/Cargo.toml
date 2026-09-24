@@ -1,0 +1,52 @@
+[package]
+name = "mongo-bongo"
+version = "0.1.0"
+description = "Mongo Bongo - the free, no-nonsense MongoDB desktop client"
+authors = ["swlittles"]
+license = "MIT"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "mongo_bongo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# NOTE: `time` is pinned to 0.3.47 in Cargo.lock - 0.3.48 has trait-coherence
+# conflicts (E0119) that break tauri-utils/cookie/mongodb. If `cargo update`
+# pulls 0.3.48+ and the build breaks, re-pin: cargo update -p time --precise 0.3.47
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mongodb = "3"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+regex = "1"
+chrono = "0.4"
+json5 = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+thiserror = "2"
+tauri-plugin-opener = "2"
+
+[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
