@@ -315,6 +315,38 @@ export interface StageStat {
   cumulativeMs: number;
 }
 
+export interface AiStatus {
+  configured: boolean;
+}
+
+export interface AiChatResult {
+  content: string;
+  /** Model that actually answered (openrouter/auto routes to a concrete one). */
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** OpenRouter credits spent, when reported. */
+  cost: number | null;
+}
+
+export interface AiModel {
+  id: string;
+  name: string;
+  contextLength: number;
+  /** USD per million tokens; null when OpenRouter does not publish a price. */
+  promptPrice: number | null;
+  completionPrice: number | null;
+  reasoning: boolean;
+}
+
+export interface AiKeyInfo {
+  label: string;
+  usage: number;
+  limit: number | null;
+  freeTier: boolean;
+}
+
 export interface ExplainSummary {
   indexName: string | null;
   stages: string[];
@@ -597,6 +629,14 @@ export const api = {
   /** Read-only workspaces pass `readOnly` so the backend rejects any write. */
   runShell: (database: string, text: string) =>
     invoke<ShellOutcome>("run_shell", { database, text, readOnly: writeGuard.isReadOnly() }),
+
+  // AI (OpenRouter) - the key is write-only from the webview
+  aiStatus: () => invoke<AiStatus>("ai_status"),
+  setAiKey: (key: string) => invoke<AiStatus>("set_ai_key", { key }),
+  aiKeyInfo: () => invoke<AiKeyInfo>("ai_key_info"),
+  aiModels: () => invoke<AiModel[]>("ai_models"),
+  aiChat: (args: { model: string; system: string; user: string; jsonMode: boolean; reasoning: boolean }) =>
+    invoke<AiChatResult>("ai_chat", args),
 };
 
 /** Normalize a thrown invoke error (string or Error) to a message. */

@@ -49,7 +49,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn crypto(&self) -> Crypto {
+    pub(crate) fn crypto(&self) -> Crypto {
         self.crypto.lock().unwrap().clone()
     }
 }

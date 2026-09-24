@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -13,6 +13,8 @@ import { Button } from "@/components/ui/button";
 import { api, errMsg, type ExplainSummary, type StageInput } from "@/lib/api";
 import { formatCount } from "@/lib/bson";
 import { cn } from "@/lib/utils";
+import { formatUsage, interpretExplain } from "@/lib/ai";
+import { AI_NOT_READY, useAi } from "@/stores/ai";
 
 export interface ExplainRequest {
   database: string;
@@ -36,6 +38,30 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
   const [showRaw, setShowRaw] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createdIndex, setCreatedIndex] = useState<string | null>(null);
+  const aiReady = useAi((st) => st.configured);
+  const [reading, setReading] = useState<{ busy: boolean; notes?: string; usage?: string } | null>(null);
+
+  const askAi = async () => {
+    if (!request || !summary) return;
+    if (!aiReady) {
+      toast.error(AI_NOT_READY);
+      return;
+    }
+    setReading({ busy: true });
+    try {
+      const { raw, ...rest } = summary;
+      const { notes, usage } = await interpretExplain({
+        database: request.database,
+        collection: request.collection,
+        summary: rest,
+        raw,
+      });
+      setReading({ busy: false, notes, usage: formatUsage(usage) });
+    } catch (e) {
+      setReading(null);
+      toast.error(errMsg(e));
+    }
+  };
 
   const createSuggested = async () => {
     if (!request || !summary?.suggestedIndex) return;
@@ -62,6 +88,7 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
     setError(null);
     setShowRaw(false);
     setCreatedIndex(null);
+    setReading(null);
     setLoading(true);
     api
       .explainQuery({ verbosity: "executionStats", ...request })
@@ -171,6 +198,21 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
                     ))}
                   </div>
                 </div>
+              )}
+
+              {reading?.notes ? (
+                <div className="notice acc">
+                  <Sparkles />
+                  <div className="min-w-0 flex-1">
+                    <p className="whitespace-pre-wrap text-[12px] leading-relaxed text-text-2">{reading.notes}</p>
+                    <p className="mt-1.5 font-mono text-[10.5px] text-text-3">{reading.usage}</p>
+                  </div>
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" className="self-start" disabled={reading?.busy} onClick={() => void askAi()}>
+                  {reading?.busy ? <Loader2 className="spin" /> : <Sparkles />}
+                  Ask AI to read this plan
+                </Button>
               )}
 
               <button

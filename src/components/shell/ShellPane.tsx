@@ -16,6 +16,7 @@ import { useExplorer, type Tab } from "@/stores/explorer";
 import { useSettings } from "@/stores/settings";
 import { api, type Doc } from "@/lib/api";
 import { setShellCompletions } from "@/lib/monaco";
+import { AssistMenu, AssistPanel, useQueryAssist } from "@/components/ai/QueryAssist";
 
 export function ShellPane({ tab }: { tab: Tab }) {
   const patchShell = useExplorer((s) => s.patchShell);
@@ -51,6 +52,12 @@ export function ShellPane({ tab }: { tab: Tab }) {
 
   const s = tab.shell;
   const outcome = s.outcome;
+  const assist = useQueryAssist({
+    database: tab.database,
+    collection: tab.collection,
+    getQuery: () => useExplorer.getState().tabs.find((t) => t.id === tab.id)?.shell.text ?? "",
+    getError: () => useExplorer.getState().tabs.find((t) => t.id === tab.id)?.shell.error ?? null,
+  });
 
   // Sampled field paths feed the Monaco completion provider (keys inside
   // filter bodies).
@@ -119,6 +126,8 @@ export function ShellPane({ tab }: { tab: Tab }) {
           </DropdownMenuContent>
         </DropdownMenu>
 
+        <AssistMenu busy={!!assist.state?.busy} onPick={(label, instruction) => void assist.run(label, instruction)} />
+
         <button className="btn pri sm" disabled={s.loading} onClick={() => void runShell(tab.id)}>
           {s.loading ? <Loader2 className="spin" /> : <Play />}
           Run <span className="kbd">⌘⏎</span>
@@ -144,6 +153,17 @@ export function ShellPane({ tab }: { tab: Tab }) {
           <div className="h-1 w-10 rounded-full bg-line-2 transition-colors group-hover:bg-accent-line" />
         </div>
       </div>
+
+      {assist.state && (
+        <AssistPanel
+          state={assist.state}
+          onApply={(text) => {
+            patchShell(tab.id, { text });
+            assist.dismiss();
+          }}
+          onDismiss={assist.dismiss}
+        />
+      )}
 
       {/* outcome */}
       {s.error && (

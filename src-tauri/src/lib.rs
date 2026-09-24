@@ -1,3 +1,4 @@
+mod ai;
 mod commands;
 mod crypto;
 mod error;
@@ -137,6 +138,11 @@ pub fn run() {
             commands::export_collection,
             commands::import_documents,
             commands::run_shell,
+            ai::ai_status,
+            ai::set_ai_key,
+            ai::ai_chat,
+            ai::ai_models,
+            ai::ai_key_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
