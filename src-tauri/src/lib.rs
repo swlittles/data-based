@@ -1,9 +1,11 @@
+mod ai;
 mod commands;
 mod crypto;
 mod error;
 mod portable;
 mod profiles;
 mod shell;
+mod ssh;
 
 use commands::AppState;
 use tauri::Manager;
@@ -106,7 +108,9 @@ pub fn run() {
             commands::aggregate_stage_stats,
             commands::bulk_update,
             commands::bulk_delete,
-            commands::db_relations,
+            commands::db_overview,
+            commands::ping_workspace,
+            commands::save_text_file,
             commands::current_ops,
             commands::kill_op,
             commands::profiler_status,
@@ -127,12 +131,18 @@ pub fn run() {
             commands::create_index,
             commands::drop_index,
             commands::collection_stats,
+            commands::collection_counts,
             commands::explain_query,
             commands::collection_fields,
             commands::analyze_schema,
             commands::export_collection,
             commands::import_documents,
             commands::run_shell,
+            ai::ai_status,
+            ai::set_ai_key,
+            ai::ai_chat,
+            ai::ai_models,
+            ai::ai_key_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

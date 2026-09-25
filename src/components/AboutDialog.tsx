@@ -18,7 +18,7 @@ interface AboutDialogProps {
 
 const PROPS = [
   { icon: Feather, title: "Native and light", hint: "A Rust core and your OS webview. Starts fast, stays out of the way." },
-  { icon: Lock, title: "Private by design", hint: "No account, no sign-in, no telemetry. Nothing leaves your machine." },
+  { icon: Lock, title: "Private by design", hint: "No account, no telemetry. AI talks to OpenRouter only when you use it." },
   { icon: ShieldCheck, title: "Encrypted at rest", hint: "Credentials are AES-256-GCM encrypted; the key can live in your OS keychain." },
 ] as const;
 

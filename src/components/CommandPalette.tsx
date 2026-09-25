@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Brush, Database, Key, Plus, Rows3, Search, Settings, Terminal } from "lucide-react";
+import { Brush, Database, Key, Plus, Rows3, Search, Settings, Sparkles, Terminal } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useExplorer } from "@/stores/explorer";
 import { useConnections } from "@/stores/connections";
@@ -118,6 +118,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       { kind: "action", key: "a:new", label: "New connection", run: () => openConnections("form"), icon: <Plus /> },
       { kind: "action", key: "a:manage", label: "Manage connections", run: () => openConnections("list"), icon: <Database /> },
       { kind: "action", key: "a:theme", label: "Appearance: themes and density", hint: "⌘⇧T cycles", run: () => ui({ appearance: true }), icon: <Brush /> },
+      { kind: "action", key: "a:studio", label: "Studio: ask your data in plain English", hint: "⌘J", run: () => ui({ studio: true }), icon: <Sparkles /> },
       { kind: "action", key: "a:settings", label: "Settings", run: () => ui({ settings: true }), icon: <Settings /> },
       { kind: "action", key: "a:ops", label: "Server operations", run: () => ui({ ops: true }), icon: <Key /> },
       { kind: "action", key: "a:help", label: "Help and shortcuts", run: () => ui({ help: true }), icon: <Key /> },

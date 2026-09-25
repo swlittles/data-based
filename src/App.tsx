@@ -20,12 +20,14 @@ import { ServerInfoDialog } from "@/components/ServerInfoDialog";
 import { AboutDialog } from "@/components/AboutDialog";
 import { WhatsNewDialog } from "@/components/WhatsNewDialog";
 import { SplashScreen } from "@/components/SplashScreen";
+import { StudioView } from "@/components/studio/StudioView";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useTheme } from "@/components/theme-provider";
 import { useConnections } from "@/stores/connections";
 import { useExplorer } from "@/stores/explorer";
 import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
+import { useAi } from "@/stores/ai";
 import { seenVersion } from "@/lib/whatsnew";
 import { checkForUpdates } from "@/lib/updater";
 import { cn } from "@/lib/utils";
@@ -101,6 +103,7 @@ function App() {
 
   useEffect(() => {
     void init();
+    void useAi.getState().refresh();
     void checkForUpdates();
   }, [init]);
 
@@ -160,9 +163,13 @@ function App() {
           e.preventDefault();
           ex.closeTab(ex.activeTabId);
         }
+      } else if (key === "j") {
+        e.preventDefault();
+        if (connected) ui.set({ studio: !useUi.getState().studio });
       } else if (key === "b") {
         e.preventDefault();
-        useSettings.getState().togglePicker();
+        if (useUi.getState().studio) ui.set({ studio: false });
+        else useSettings.getState().togglePicker();
       } else if (key === "enter") {
         // Run the active query from anywhere in the canvas.
         const ex = useExplorer.getState();
@@ -191,13 +198,21 @@ function App() {
             // key={activeId}: switching workspace remounts the picker/canvas so
             // they rebind to the freshly-hydrated explorer slice.
             <div key={activeId ?? "none"} className="flex min-h-0 min-w-0 flex-1">
-              {!pickerCollapsed && <Picker />}
-              <ErrorBoundary>
-                <Canvas />
-              </ErrorBoundary>
-              <ErrorBoundary>
-                <ActiveDrawer />
-              </ErrorBoundary>
+              {ui.studio ? (
+                <ErrorBoundary>
+                  <StudioView />
+                </ErrorBoundary>
+              ) : (
+                <>
+                  {!pickerCollapsed && <Picker />}
+                  <ErrorBoundary>
+                    <Canvas />
+                  </ErrorBoundary>
+                  <ErrorBoundary>
+                    <ActiveDrawer />
+                  </ErrorBoundary>
+                </>
+              )}
             </div>
           ) : restoring ? (
             <main className="canvas center">

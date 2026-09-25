@@ -14,11 +14,13 @@ interface UiState {
   serverInfo: boolean;
   about: boolean;
   whatsNew: boolean;
+  /** Studio (AI) replaces the picker and canvas while on. */
+  studio: boolean;
 
   setPalette: (open: boolean) => void;
   openConnections: (view?: "list" | "form", editing?: ProfileSummary | null) => void;
   closeConnections: () => void;
-  set: (patch: Partial<Pick<UiState, "appearance" | "settings" | "help" | "ops" | "serverInfo" | "about" | "whatsNew">>) => void;
+  set: (patch: Partial<Pick<UiState, "appearance" | "settings" | "help" | "ops" | "serverInfo" | "about" | "whatsNew" | "studio">>) => void;
 }
 
 export const useUi = create<UiState>((set) => ({
@@ -31,6 +33,7 @@ export const useUi = create<UiState>((set) => ({
   serverInfo: false,
   about: false,
   whatsNew: false,
+  studio: false,
   setPalette: (open) => set({ palette: open }),
   openConnections: (view = "list", editing = null) => set({ connections: { open: true, view, editing } }),
   closeConnections: () => set({ connections: { open: false } }),

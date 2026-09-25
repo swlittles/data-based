@@ -28,6 +28,9 @@ export const SLIDES: WhatsNewSlide[] = [
       "Document drawer with typed field editing, a JSON editor and a diff view",
       "Production connections open read-only; edit mode is an explicit switch",
       "Credentials encrypted at rest, optionally keyed from the OS keychain",
+      "Studio: ask questions in plain English, get read-only queries and charts (bring your own OpenRouter key)",
+      "AI assist in the shell and explain plans: fix, optimize, explain, suggest indexes",
+      "SSH tunnels and a database overview with storage, index and reference insights",
     ],
   },
 ];

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, Brush, CircleHelp, Database, Loader2, Server, Settings } from "lucide-react";
+import { Activity, Brush, CircleHelp, Database, Loader2, Server, Settings, Sparkles } from "lucide-react";
 import { BrandMark } from "@/components/brand/BrandMark";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -31,8 +31,10 @@ export function initials(name: string): string {
 /**
  * The rail: connection tiles first (saved profiles + any ad-hoc workspaces),
  * then the sections, then appearance / settings pinned to the bottom.
- * Tiles: colour tag top-left, live dot bottom-right, dashed border = read-only,
- * red border = production.
+ * Tiles: the active workspace is a solid accent (red for production) tile
+ * with a bar on the left; other open workspaces keep a green dot; saved but
+ * disconnected profiles are dimmed. Colour tag top-left, dashed border =
+ * read-only, red border = production.
  */
 export function Rail() {
   const profiles = useConnections((s) => s.profiles);
@@ -45,6 +47,7 @@ export function Rail() {
   const status = useConnections((s) => s.status);
   const openConnections = useUi((s) => s.openConnections);
   const ui = useUi((s) => s.set);
+  const studio = useUi((s) => s.studio);
   const pickerCollapsed = useSettings((s) => s.pickerCollapsed);
   const togglePicker = useSettings((s) => s.togglePicker);
   const [confirmClose, setConfirmClose] = useState<{ id: string; name: string } | null>(null);
@@ -60,7 +63,7 @@ export function Rail() {
     const busy = p ? connectingId === p.id : false;
     const readOnly = ws ? ws.readOnly : access !== "readwrite";
     const prod = access === "production";
-    const label = `${name}${prod ? " · production" : access === "readonly" ? " · read-only" : ""}${live ? "" : " · disconnected"}`;
+    const label = `${name}${prod ? " · production" : access === "readonly" ? " · read-only" : ""}${on ? " · active" : live ? " · open in background" : " · disconnected"}`;
     const onClick = () => {
       if (ws) void switchTo(ws.info.id);
       else if (p) void connect(p.id);
@@ -160,8 +163,14 @@ export function Rail() {
         </Tooltip>
       </div>
 
-      {section("Data (⌘B toggles the picker)", <Database />, togglePicker, {
-        on: connected && !pickerCollapsed,
+      {section(
+        "Data (⌘B toggles the picker)",
+        <Database />,
+        () => (studio ? ui({ studio: false }) : togglePicker()),
+        { on: connected && !pickerCollapsed && !studio, disabled: !connected }
+      )}
+      {section("Studio - ask your data in plain English", <Sparkles />, () => ui({ studio: !studio }), {
+        on: connected && studio,
         disabled: !connected,
       })}
       {section("Server", <Server />, () => ui({ serverInfo: true }), { disabled: !connected })}

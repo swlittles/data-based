@@ -17,7 +17,22 @@
 - Collection copy across connections, collection diff, bulk update/delete
 - Production connections open read-only until you explicitly switch to edit mode
 - Backups offered before destructive deletes, drops and clears
+- SSH tunnels (key, password or agent) and a database overview with storage, index and reference insights
 - Multiple themes and densities
+
+## AI (OpenRouter)
+
+Bring your own [OpenRouter](https://openrouter.ai) key (Settings > AI) and pick any model it offers.
+
+- **Studio** (⌘J): ask a question in plain English; get a read-only query, its rows and a bar, line or
+  single-number chart. Works on one collection or across a whole database with joins. Follow-ups, saved
+  questions, result summaries, CSV/JSON export, and "Open in Shell" for every generated query.
+- **Shell assist**: fix, optimize, explain, suggest indexes or add safety limits to a statement.
+- **Explain plans**: a plain-language verdict and the one fix that matters most.
+
+Studio never writes: write requests are refused and the backend rejects `$out` / `$merge` on its queries. The key
+is stored encrypted and never reaches the UI. Nothing goes to OpenRouter until you use an AI feature; collection
+and field names are always sent, sample documents and result rows only while "Share sample data" is on.
 
 ## Security model
 
@@ -26,7 +41,8 @@
   (Settings > Safety).
 - Stored secrets are never sent back to the UI.
 - Full-backup exports re-encrypt credentials under a passphrase you choose (Argon2id + AES-256-GCM).
-- Strict CSP, no remote content, no telemetry. Everything is bundled and works offline.
+- Strict CSP, no remote content, no telemetry. Everything is bundled and works offline; AI calls go from the Rust
+  backend to OpenRouter only when you use them.
 
 ## Development
 

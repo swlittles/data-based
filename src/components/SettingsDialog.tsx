@@ -8,6 +8,7 @@ import { DRAWER_DEFAULT, PICKER_DEFAULT, useSettings } from "@/stores/settings";
 import { useConnections } from "@/stores/connections";
 import { useUi } from "@/stores/ui";
 import { checkForUpdates } from "@/lib/updater";
+import { AiSettings } from "@/components/ai/AiSettings";
 
 const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 
@@ -23,7 +24,7 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   );
 }
 
-/** Settings: explorer defaults, safety, appearance shortcut, security, app. */
+/** Settings: explorer defaults, safety, AI, appearance shortcut, security, app. */
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const {
     pageSize,
@@ -47,7 +48,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       <DialogContent className="max-w-[640px]">
         <DialogHeader>
           <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>preferences for this machine · nothing leaves it</DialogDescription>
+          <DialogDescription>preferences for this machine</DialogDescription>
         </DialogHeader>
         <DialogBody>
           <div className="fld">
@@ -100,6 +101,8 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               </Row>
             </div>
           </div>
+
+          <AiSettings />
 
           <div className="fld">
             <label>Appearance</label>

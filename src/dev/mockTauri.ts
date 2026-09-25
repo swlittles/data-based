@@ -44,9 +44,9 @@ const store: Record<string, Record<string, Doc[]>> = {
 };
 
 const profiles = [
-  { id: "p1", name: "TEST", color: "#00ED64", access: "readwrite", kind: "fields", hostSummary: "localhost:27017", srv: false, tls: false, hasSecret: false, fields: { scheme: "mongodb", host: "localhost", port: 27017, extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: new Date().toISOString() },
-  { id: "p2", name: "staging", color: "#7FE1FF", access: "readonly", kind: "uri", hostSummary: "mongodb+srv://staging.mongodb.net", srv: true, tls: true, hasSecret: true, fields: { scheme: "mongodb+srv", host: "", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
-  { id: "p3", name: "prod", color: "#F0705F", access: "production", kind: "uri", hostSummary: "mongodb+srv://prod.mongodb.net", srv: true, tls: true, hasSecret: true, fields: { scheme: "mongodb+srv", host: "", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
+  { id: "p1", name: "TEST", color: "#00ED64", access: "readwrite", kind: "fields", hostSummary: "localhost:27017", srv: false, tls: false, hasSecret: false, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "mongodb", host: "localhost", port: 27017, extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: new Date().toISOString() },
+  { id: "p2", name: "staging", color: "#7FE1FF", access: "readonly", kind: "uri", hostSummary: "mongodb+srv://ops@staging.mongodb.net/app", srv: true, tls: true, hasSecret: true, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "mongodb+srv", host: "staging.mongodb.net", username: "ops", defaultDatabase: "app", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
+  { id: "p3", name: "prod", color: "#F0705F", access: "production", kind: "uri", hostSummary: "mongodb://app@10.0.3.12:27017", srv: false, tls: false, hasSecret: true, ssh: { enabled: true, host: "bastion.example.com", port: 22, username: "ubuntu", auth: "key", keyPath: "~/.ssh/id_ed25519" }, hasSshSecret: false, fields: { scheme: "mongodb", host: "10.0.3.12", port: 27017, username: "app", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
 ];
 
 const info = (p: (typeof profiles)[number]) => ({
@@ -59,6 +59,7 @@ const info = (p: (typeof profiles)[number]) => ({
   latencyMs: 12,
   color: p.color,
   access: p.access,
+  ssh: p.ssh.enabled ? `${p.ssh.username}@${p.ssh.host}` : null,
 });
 
 let seq = 0;
@@ -75,6 +76,94 @@ function matches(doc: Doc, filter: string): boolean {
   const val = m[3] ?? m[4] ?? (m[5] !== undefined ? Number(m[5]) : m[6] === "true");
   const got = key.split(".").reduce<unknown>((o, k) => (o as Doc | undefined)?.[k], doc);
   return got === val;
+}
+
+
+let aiKey = false;
+
+/** Stand-in for the aggregate server: enough shape for Studio's charts. */
+function mockAggregate(stages: { op: string; body: string }[]): Doc[] {
+  const text = stages.map((s) => `${s.op} ${s.body}`).join(" ");
+  if (!text.includes("$group")) return orders.slice(0, 5);
+  if (text.includes("createdAt")) {
+    const byDay = new Map<string, number>();
+    for (const o of orders) {
+      const day = String((o.createdAt as { $date: string }).$date).slice(0, 10);
+      byDay.set(day, (byDay.get(day) ?? 0) + (o.total as number));
+    }
+    return [...byDay.entries()].sort().map(([day, revenue]) => ({ _id: day, revenue: Math.round(revenue) }));
+  }
+  if (!text.includes("$status") && !text.includes("tier")) {
+    return [{ _id: null, revenue: Math.round(orders.reduce((a, o) => a + (o.total as number), 0)) }];
+  }
+  const key = text.includes("tier") ? (o: Doc) => (o.customer as Doc).tier as string : (o: Doc) => o.status as string;
+  const groups = new Map<string, { count: number; revenue: number }>();
+  for (const o of orders) {
+    const g = groups.get(key(o)) ?? { count: 0, revenue: 0 };
+    g.count += 1;
+    g.revenue += o.total as number;
+    groups.set(key(o), g);
+  }
+  return [...groups.entries()]
+    .map(([k, g]) => ({ _id: k, count: g.count, revenue: Math.round(g.revenue) }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/** Canned OpenRouter replies keyed off the prompt text. */
+function mockAi(system: string, user: string): string {
+  const q = user.toLowerCase();
+  if (system.includes("pick which MongoDB collections")) return JSON.stringify({ collections: ["orders", "users"] });
+  if (system.includes("suggest analytics questions")) {
+    return JSON.stringify({ prompts: ["Revenue by customer tier", "Orders per day this month", "Refund rate by status", "Top 5 customers by spend"] });
+  }
+  if (system.includes("summarize MongoDB query results")) {
+    return "Paid orders dominate: about two thirds of all orders and most of the revenue. Refunds are rare but concentrated in two customers. Pending orders are small in both count and value.";
+  }
+  if (system.includes("explain plan")) {
+    return "Unhealthy: this is a collection scan that reads every document to return a few.\nThe plan examined 60 documents and returned 5, with an in-memory sort.\nFix: db.orders.createIndex({ status: 1, createdAt: -1 })";
+  }
+  if (system.includes("MongoDB expert inside a database GUI")) {
+    return JSON.stringify({
+      query: 'db.orders.find({ status: "paid" }, { total: 1, customer: 1 }).sort({ createdAt: -1 }).limit(50)',
+      notes: "- Added a projection so only the fields you read come back\n- Added limit(50) so a large collection cannot flood the client\n- An index on { status: 1, createdAt: -1 } serves both the filter and the sort",
+    });
+  }
+  const ask = q.split("request:").pop() ?? q;
+  if (/delete|remove|drop|update|insert/.test(ask)) return JSON.stringify({ kind: "find", explanation: "", writeIntent: true });
+  if (/day|trend|over time/.test(ask)) {
+    return JSON.stringify({
+      kind: "aggregate",
+      collection: "orders",
+      stages: [
+        { op: "$group", body: '{ _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, revenue: { $sum: "$total" } }' },
+        { op: "$sort", body: "{ _id: 1 }" },
+        { op: "$limit", body: "500" },
+      ],
+      chart: { type: "line", labelField: "_id", valueField: "revenue", title: "Revenue per day" },
+      explanation: "Sums order totals per calendar day, oldest first.",
+    });
+  }
+  if (/total revenue|how much/.test(ask)) {
+    return JSON.stringify({
+      kind: "aggregate",
+      collection: "orders",
+      stages: [{ op: "$group", body: '{ _id: null, revenue: { $sum: "$total" } }' }, { op: "$limit", body: "1" }],
+      chart: { type: "number", labelField: "", valueField: "revenue", title: "Total revenue (USD)" },
+      explanation: "Adds up the total of every order.",
+    });
+  }
+  const tier = /tier/.test(ask);
+  return JSON.stringify({
+    kind: "aggregate",
+    collection: "orders",
+    stages: [
+      { op: "$group", body: tier ? '{ _id: "$customer.tier", count: { $sum: 1 }, revenue: { $sum: "$total" } }' : '{ _id: "$status", count: { $sum: 1 }, revenue: { $sum: "$total" } }' },
+      { op: "$sort", body: "{ count: -1 }" },
+      { op: "$limit", body: "500" },
+    ],
+    chart: { type: "bar", labelField: "_id", valueField: tier ? "revenue" : "count", title: tier ? "Revenue by customer tier" : "Orders by status" },
+    explanation: tier ? "Groups orders by the customer's tier and sums revenue." : "Counts orders in each status, most common first.",
+  });
 }
 
 async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
@@ -116,6 +205,8 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
       return Object.keys(store).map((name) => ({ name, sizeOnDisk: name === "api" ? 44_700_000 : 1_200_000, empty: false }));
     case "list_collections":
       return Object.keys(store[args.database as string] ?? {}).map((name) => ({ name, kind: "collection" }));
+    case "collection_counts":
+      return Object.fromEntries(Object.entries(store[args.database as string] ?? {}).map(([n, d]) => [n, d.length]));
     case "collection_stats": {
       const docs = store[args.database as string]?.[args.collection as string] ?? [];
       return { count: docs.length, size: docs.length * 4400, avgObjSize: 4400, storageSize: docs.length * 5100, totalIndexSize: 49_152, nindexes: 2 };
@@ -149,7 +240,28 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
     case "collection_fields":
       return ["_id", "customer.name", "customer.tier", "status", "total", "items", "createdAt"];
     case "aggregate_collection":
-      return { docs: orders.slice(0, 5), execMs: 8, appliedDefaultLimit: false };
+      return { docs: mockAggregate(args.stages as { op: string; body: string }[]), execMs: 8, appliedDefaultLimit: false };
+    case "ai_status":
+      return { configured: aiKey };
+    case "set_ai_key":
+      aiKey = String(args.key ?? "").trim() !== "";
+      return { configured: aiKey };
+    case "ai_key_info":
+      return { label: "sk-or-v1-a1b...9f2", usage: 1.84, limit: 20, freeTier: false };
+    case "ai_models":
+      await sleep(300);
+      return [
+        { id: "anthropic/claude-sonnet-5", name: "Anthropic: Claude Sonnet 5", contextLength: 1000000, promptPrice: 3, completionPrice: 15, reasoning: true },
+        { id: "google/gemini-3-flash", name: "Google: Gemini 3 Flash", contextLength: 1000000, promptPrice: 0.3, completionPrice: 2.5, reasoning: true },
+        { id: "meta-llama/llama-4-scout:free", name: "Meta: Llama 4 Scout (free)", contextLength: 128000, promptPrice: 0, completionPrice: 0, reasoning: false },
+        { id: "openai/gpt-5-mini", name: "OpenAI: GPT-5 Mini", contextLength: 400000, promptPrice: 0.25, completionPrice: 2, reasoning: true },
+        { id: "openrouter/auto", name: "Auto Router", contextLength: 2000000, promptPrice: null, completionPrice: null, reasoning: true },
+      ];
+    case "ai_chat": {
+      await sleep(700);
+      const content = mockAi(String(args.system), String(args.user));
+      return { content, model: args.model === "openrouter/auto" ? "anthropic/claude-sonnet-5" : args.model, inputTokens: 812, outputTokens: 164, totalTokens: 976, cost: 0.0049 };
+    }
     case "aggregate_stage_stats":
       return (args.stages as unknown[]).map((_, i) => ({ op: "$match", docs: 60 - i * 20, cumulativeMs: 2 + i }));
     case "insert_document":
@@ -176,8 +288,30 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
       return { was: 0, slowms: 100 };
     case "profiler_entries":
       return [];
-    case "db_relations":
-      return { nodes: [], edges: [], truncated: false };
+    case "ping_workspace":
+      return 8 + Math.round(Math.random() * 30);
+    case "save_text_file":
+      return null;
+    case "db_overview": {
+      const colls = store[args.database as string] ?? {};
+      return {
+        database: args.database,
+        refsSkipped: 0,
+        collections: Object.entries(colls).map(([name, docs], i) => ({
+          name,
+          kind: "collection",
+          count: name === "audit_log" ? 184_220 : docs.length,
+          size: docs.length * 4400,
+          avgObjSize: docs.length ? 4400 : null,
+          storageSize: docs.length * 5100,
+          totalIndexSize: name === "payments" ? 400_000 : 36_864 * (i + 1),
+          nindexes: name === "audit_log" ? 1 : 2,
+          capped: name === "sessions",
+          validated: name === "users",
+          refs: name === "orders" ? [{ field: "userId", to: "users" }] : name === "payments" ? [{ field: "orderId", to: "orders" }] : [],
+        })),
+      };
+    }
     default:
       console.warn("[mockTauri] unhandled", cmd, args);
       return null;
@@ -194,6 +328,12 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
   unregisterCallback: (id: number) => listeners.delete(id),
   convertFileSrc: (p: string) => p,
   metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+};
+
+// The event API's unlisten() calls into this alongside plugin:event|unlisten;
+// without it every listener cleanup (StrictMode remounts) rejects.
+(window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+  unregisterListener: (_event: string, eventId: number) => listeners.delete(eventId),
 };
 
 export {};

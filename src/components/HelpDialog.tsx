@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { BookOpen, Boxes, Keyboard, Search, ShieldCheck } from "lucide-react";
+import { BookOpen, Boxes, Keyboard, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +64,7 @@ const SECTIONS = [
   { id: "overview", label: "Overview", icon: BookOpen },
   { id: "connections", label: "Connections", icon: Boxes },
   { id: "querying", label: "Querying", icon: Search },
+  { id: "ai", label: "AI and Studio", icon: Sparkles },
   { id: "safety", label: "Safety", icon: ShieldCheck },
   { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
 ] as const;
@@ -218,6 +219,48 @@ function Querying() {
   );
 }
 
+function Ai() {
+  return (
+    <>
+      <H>Studio</H>
+      <P>
+        Open <B>Studio</B> from the rail (<K>{MOD} J</K>) and ask a question in plain English. The model writes a
+        read-only query, Mongo Bongo runs it and shows the rows with a bar, line or single-number chart. Pick one
+        collection, or <B>Whole database</B> to let the model choose collections and join them.
+      </P>
+      <Rows
+        rows={[
+          ["Follow-ups", "Keep asking in the same chat; earlier questions and their queries are sent as context."],
+          ["Saved questions", "Hover a question and pin it. Rerunning asks again, so the query is rebuilt against today's schema and data."],
+          ["Open in Shell", "Every answer shows its query. Open it in the shell to tweak it, copy it, or run it as a starting point."],
+          ["Summarize", "A plain-language reading of the result rows."],
+          ["Normal / Deep think", "Deep think asks the model to reason before answering: slower, better for joins and vague questions."],
+        ]}
+      />
+      <H>Assist in the shell and explain plans</H>
+      <P>
+        The <B>AI</B> menu in the shell fixes, optimizes, explains or adds safety limits to the statement in the editor,
+        or applies any change you describe. Suggestions are only applied when you press <B>Apply</B>. The explain sheet
+        has <B>Ask AI to read this plan</B> for a verdict and the one fix that matters most.
+      </P>
+      <H>OpenRouter and your data</H>
+      <P>
+        AI features use your own OpenRouter key (Settings &gt; AI), stored encrypted like connection passwords. Pick any
+        model OpenRouter offers; <B>openrouter/auto</B> chooses one per request. Nothing is sent until you use an AI
+        feature. Collection and field names are always sent; one sample document per collection and result rows are sent
+        only while <B>Share sample data</B> is on.
+      </P>
+      <div className="notice acc mt-3">
+        <ShieldCheck />
+        <span>
+          Studio never writes. Write requests are refused, and the backend rejects $out and $merge on Studio queries no
+          matter what the model returns.
+        </span>
+      </div>
+    </>
+  );
+}
+
 function Safety() {
   return (
     <>
@@ -234,8 +277,8 @@ function Safety() {
       <div className="notice acc mt-3">
         <ShieldCheck />
         <span>
-          Nothing leaves your machine. There is no account, no telemetry and no cloud; connections, saved queries
-          and settings are local files.
+          No account, no telemetry and no cloud: connections, saved queries and settings are local files. The only
+          outside service is OpenRouter, and only when you use an AI feature.
         </span>
       </div>
     </>
@@ -249,6 +292,7 @@ function Shortcuts() {
     [<K>{MOD} N</K>, "Insert a document in the current collection"],
     [<K>{MOD} W</K>, "Close the current tab"],
     [<K>{MOD} B</K>, "Toggle the picker"],
+    [<K>{MOD} J</K>, "Open or close Studio"],
     [<K>{MOD} {ENTER}</K>, "Run the current query or pipeline"],
     [<K>{MOD} S</K>, "Save the document in the drawer"],
     [<K>{MOD} ,</K>, "Settings"],
@@ -278,6 +322,7 @@ const RENDER: Record<SectionId, () => ReactNode> = {
   overview: Overview,
   connections: Connections,
   querying: Querying,
+  ai: Ai,
   safety: Safety,
   shortcuts: Shortcuts,
 };

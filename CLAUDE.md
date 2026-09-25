@@ -18,6 +18,15 @@ Tauri 2 (Rust, `src-tauri/`) + React 19 / Vite / Tailwind (`src/`) MongoDB deskt
 - The mark is `<BrandMark />` (`src/components/brand/BrandMark.tsx`) and always
   paints with `currentColor`; in-app it sits on `var(--accent)`.
 
+## AI
+
+- OpenRouter is the only provider. `src-tauri/src/ai.rs` proxies every call; the key
+  lives encrypted in `ai_key.json` and is write-only from the webview.
+- Prompts live in `src/lib/ai.ts`; settings in `src/stores/ai.ts`; Studio in
+  `src/components/studio/`. Studio must stay read-only: it runs aggregations with
+  `readOnly: true` so the backend rejects `$out` / `$merge`.
+- `src/dev/mockTauri.ts` fakes OpenRouter replies so the AI UI works in `npm run dev`.
+
 ## Behaviour to preserve
 
 - Connections can be flagged `production`; a production workspace opens
