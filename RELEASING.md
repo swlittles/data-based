@@ -1,7 +1,7 @@
 # Releasing Mongo Bongo
 
 Releases are fully automated: **push to the `production` branch** and GitHub
-Actions builds macOS (Apple Silicon + Intel), Windows, and Linux bundles,
+Actions builds macOS (Apple Silicon), Windows, and Linux bundles,
 creates a `v<version>` GitHub release, and publishes the signed updater
 manifest (`latest.json`) that running apps poll for self-updates.
 
@@ -47,10 +47,11 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD < ~/.tauri/mongo-bongo.key.pass
    git push origin production
    ```
 
-3. The **Release** workflow runs tests first, then builds all four targets
-   and publishes the release. Existing installs see the update on next
-   launch (or via *Settings → Check for updates...*) and self-update from the
-   GitHub release.
+3. The **Release** workflow builds all three targets in parallel and
+   publishes the release. It does not re-run tests: CI already ran them on
+   `main`, so only merge to `production` from a green `main`. Existing
+   installs see the update on next launch (or via *Settings → Check for
+   updates...*) and self-update from the GitHub release.
 
 ## How the updater works
 
@@ -65,20 +66,22 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD < ~/.tauri/mongo-bongo.key.pass
 
 ## Local release builds
 
-`createUpdaterArtifacts` means even local `tauri build` runs want the signing
-key. Either export it:
+For a build on this machine only (the fastest way to try a release on your
+own Mac), with the signing key in `~/.tauri`:
 
 ```bash
-TAURI_SIGNING_PRIVATE_KEY=$(cat ~/.tauri/mongo-bongo.key) \
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(cat ~/.tauri/mongo-bongo.key.password) \
-npm run tauri build
+npm run build:local
 ```
 
-...or temporarily set `"createUpdaterArtifacts": false` if you just need an
-unsigned local bundle to test.
+It signs the updater artifacts exactly like CI and prints the bundle paths
+(`src-tauri/target/release/bundle/`). Without the key, temporarily set
+`"createUpdaterArtifacts": false` in `tauri.conf.json` for an unsigned bundle.
 
 ## Notes
 
+- Intel Macs are not built. To add them back, restore the `macOS (Intel)`
+  matrix entry (`--target x86_64-apple-darwin`) in `release.yml`. macOS
+  minutes cost 10x Linux minutes on a private repo, which is why it was cut.
 - Builds are unsigned by Apple/Microsoft (fine for an OSS tool; macOS users
   may need right-click → Open on first launch). Apple notarization can be
   added later by setting the `APPLE_*` secrets and uncommenting nothing - 
