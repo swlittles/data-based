@@ -330,4 +330,10 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
   metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
 };
 
+// The event API's unlisten() calls into this alongside plugin:event|unlisten;
+// without it every listener cleanup (StrictMode remounts) rejects.
+(window as unknown as { __TAURI_EVENT_PLUGIN_INTERNALS__: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+  unregisterListener: (_event: string, eventId: number) => listeners.delete(eventId),
+};
+
 export {};
