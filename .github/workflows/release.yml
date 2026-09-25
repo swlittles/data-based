@@ -3,7 +3,8 @@ name: Release
 # Every push to `production` builds all platforms and publishes a GitHub
 # release tagged v<version> (version read from src-tauri/tauri.conf.json),
 # including the signed updater artifacts + latest.json manifest that the
-# in-app updater consumes.
+# in-app updater consumes. Tests are not repeated here: CI runs them on every
+# push to main, and production only ever receives main.
 
 on:
   push:
@@ -17,42 +18,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test & typecheck
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Typecheck & build frontend
-        run: npm run build
-
-      - name: Rust tests
-        working-directory: src-tauri
-        run: cargo test --locked
-
   publish:
     name: Build ${{ matrix.name }}
-    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -61,10 +28,6 @@ jobs:
             platform: macos-latest
             args: --target aarch64-apple-darwin
             targets: aarch64-apple-darwin
-          - name: macOS (Intel)
-            platform: macos-latest
-            args: --target x86_64-apple-darwin
-            targets: x86_64-apple-darwin
           - name: Linux (x64)
             platform: ubuntu-22.04
             args: ""
@@ -75,6 +38,13 @@ jobs:
             targets: ""
     runs-on: ${{ matrix.platform }}
     steps:
+      # Defender scans every file rustc writes; on hosted Windows runners that
+      # is a large share of the build. The runner is thrown away afterwards.
+      - name: Disable Windows Defender real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
@@ -119,7 +89,6 @@ jobs:
             | Platform | File |
             |---|---|
             | macOS (Apple Silicon) | `*_aarch64.dmg` |
-            | macOS (Intel) | `*_x64.dmg` |
             | Windows | `*_x64-setup.exe` / `*.msi` |
             | Linux | `*.AppImage` / `*.deb` / `*.rpm` |
           releaseDraft: false

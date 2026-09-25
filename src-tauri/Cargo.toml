@@ -46,9 +46,10 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 
+# Thin LTO with parallel codegen. Measured on a clean M-series build: 226s vs
+# 426s for full LTO + codegen-units = 1, for a 16.7 MB vs 10.6 MB binary.
 [profile.release]
 panic = "abort"
-codegen-units = 1
-lto = true
+lto = "thin"
 opt-level = "s"
 strip = true
