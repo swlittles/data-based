@@ -44,7 +44,7 @@ export function SplashScreen() {
       <BrandMark className="splash-mark h-[72px] w-[72px] text-primary" />
       <div className="splash-rise flex flex-col items-center gap-2 text-center" style={{ animationDelay: "0.15s" }}>
         <h1 className="font-display text-[34px] font-semibold leading-none tracking-[-0.03em] text-text">Mongo Bongo</h1>
-        <p className="text-[13.5px] text-text-2">The free, no-nonsense MongoDB client.</p>
+        <p className="text-[13.5px] text-text-2">The free, no-nonsense MongoDB and PostgreSQL client.</p>
       </div>
       <p className="splash-rise font-mono text-[10.5px] tracking-[0.12em] text-text-3" style={{ animationDelay: "0.3s" }}>
         FREE AND OPEN SOURCE · NO ACCOUNT · NO TELEMETRY

@@ -12,16 +12,24 @@ use tauri::{AppHandle, Emitter, State};
 use crate::crypto::{Crypto, KeySource};
 use crate::error::{AppError, AppResult};
 use crate::profiles::{uri_from_input, ProfileInput, ProfileStore, ProfileSummary};
+use crate::pg::PgConn;
 use crate::shell::{self, Statement};
 
 /// One live connection: the pooled driver client plus the metadata the UI
 /// shows for it. Keyed in [`Sessions::pool`] by workspace id (the profile id
 /// for saved connections, a generated `adhoc-N` for unsaved ones).
 pub struct PooledConn {
-    pub client: Client,
+    pub conn: DbConn,
     pub info: ConnectionInfo,
     /// SSH tunnel the client talks through; dropped with the workspace.
     pub _tunnel: Option<crate::ssh::Tunnel>,
+}
+
+/// The driver behind a workspace.
+#[derive(Clone)]
+pub enum DbConn {
+    Mongo(Client),
+    Pg(PgConn),
 }
 
 /// All connections the user has open at once. Switching workspaces just
@@ -88,28 +96,41 @@ fn parse_doc_text(text: &str) -> AppResult<Document> {
     to_doc(&shell::parse_doc_or_empty(text)?)
 }
 
-async fn current_client(state: &State<'_, AppState>) -> AppResult<Client> {
+const MONGO_ONLY: &str = "This isn't available for PostgreSQL connections";
+
+fn mongo_of(conn: &DbConn) -> AppResult<Client> {
+    match conn {
+        DbConn::Mongo(c) => Ok(c.clone()),
+        DbConn::Pg(_) => Err(AppError::Other(MONGO_ONLY.into())),
+    }
+}
+
+async fn conn_for(state: &State<'_, AppState>, workspace: Option<&str>) -> AppResult<DbConn> {
     let s = state.sessions.lock().await;
-    let id = s.active.as_ref().ok_or(AppError::NotConnected)?;
-    s.pool
-        .get(id)
-        .map(|c| c.client.clone())
-        .ok_or(AppError::NotConnected)
+    let id = match workspace {
+        Some(id) => id,
+        None => s.active.as_deref().ok_or(AppError::NotConnected)?,
+    };
+    s.pool.get(id).map(|c| c.conn.clone()).ok_or(AppError::NotConnected)
+}
+
+/// The Postgres pool of a workspace (the active one when `None`), or `None`
+/// for MongoDB workspaces - commands branch on this first.
+async fn pg_for(state: &State<'_, AppState>, workspace: Option<&str>) -> AppResult<Option<PgConn>> {
+    Ok(match conn_for(state, workspace).await? {
+        DbConn::Pg(p) => Some(p),
+        DbConn::Mongo(_) => None,
+    })
+}
+
+async fn current_client(state: &State<'_, AppState>) -> AppResult<Client> {
+    mongo_of(&conn_for(state, None).await?)
 }
 
 /// Client of a specific open workspace, or the active one when `workspace`
 /// is `None`. Lets commands address any connection in the pool.
 async fn client_for(state: &State<'_, AppState>, workspace: Option<&str>) -> AppResult<Client> {
-    match workspace {
-        None => current_client(state).await,
-        Some(id) => {
-            let s = state.sessions.lock().await;
-            s.pool
-                .get(id)
-                .map(|c| c.client.clone())
-                .ok_or(AppError::NotConnected)
-        }
-    }
+    mongo_of(&conn_for(state, workspace).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +155,12 @@ pub struct ConnectionInfo {
     pub access: String,
     /// "user@bastion" when the connection runs through an SSH tunnel.
     pub ssh: Option<String>,
+    /// "mongo" | "postgres"
+    pub engine: String,
+    /// Postgres: the database the connection is bound to.
+    pub database: Option<String>,
+    /// Postgres: schema to open first (`?schema=` in the URI).
+    pub default_schema: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -260,8 +287,43 @@ async fn establish(
         color: None,
         access: crate::profiles::default_access(),
         ssh: ssh.as_ref().map(|(cfg, _)| cfg.summary()),
+        engine: "mongo".into(),
+        database: None,
+        default_schema: None,
     };
     Ok((client, info, tunnel))
+}
+
+/// Connect to either engine, picked by the URI scheme.
+async fn establish_any(
+    uri: &str,
+    name: String,
+    profile_id: Option<String>,
+    ssh: SshParams,
+    data_dir: &std::path::Path,
+) -> AppResult<(DbConn, ConnectionInfo, Option<crate::ssh::Tunnel>)> {
+    if crate::pg::is_pg_uri(uri) {
+        let ssh_summary = ssh.as_ref().map(|(cfg, _)| cfg.summary());
+        let e = crate::pg::establish(uri, ssh, data_dir).await?;
+        let info = ConnectionInfo {
+            id: String::new(),
+            profile_id,
+            name,
+            host_summary: e.host_summary,
+            server_version: e.server_version,
+            topology: e.topology,
+            latency_ms: e.latency_ms,
+            color: None,
+            access: crate::profiles::default_access(),
+            ssh: ssh_summary,
+            engine: "postgres".into(),
+            database: Some(e.conn.database.clone()),
+            default_schema: e.conn.default_schema.clone(),
+        };
+        return Ok((DbConn::Pg(e.conn), info, e.tunnel));
+    }
+    let (client, info, tunnel) = establish(uri, name, profile_id, ssh, data_dir).await?;
+    Ok((DbConn::Mongo(client), info, tunnel))
 }
 
 /// "macOS · arm64" style environment line for the empty-pane version block.
@@ -371,9 +433,9 @@ pub async fn test_connection(
         (None, None) => return Err(AppError::Other("nothing to test".into())),
     };
 
-    match establish(&uri, "test".into(), None, ssh, &state.data_dir).await {
-        Ok((client, info, tunnel)) => {
-            drop(client);
+    match establish_any(&uri, "test".into(), None, ssh, &state.data_dir).await {
+        Ok((conn, info, tunnel)) => {
+            drop(conn);
             drop(tunnel);
             Ok(TestResult {
                 ok: true,
@@ -407,15 +469,15 @@ pub async fn connect(profile_id: String, state: State<'_, AppState>) -> AppResul
             store.ssh_for(&profile_id, &crypto)?,
         )
     };
-    let (client, mut info, tunnel) =
-        establish(&uri, name, Some(profile_id.clone()), ssh, &state.data_dir).await?;
+    let (conn, mut info, tunnel) =
+        establish_any(&uri, name, Some(profile_id.clone()), ssh, &state.data_dir).await?;
     info.id = profile_id.clone();
     info.color = color;
     info.access = access;
     {
         let mut s = state.sessions.lock().await;
         s.pool
-            .insert(profile_id.clone(), PooledConn { client, info: info.clone(), _tunnel: tunnel });
+            .insert(profile_id.clone(), PooledConn { conn, info: info.clone(), _tunnel: tunnel });
         s.active = Some(profile_id.clone());
     }
     state.store.lock().unwrap().touch(&profile_id)?;
@@ -437,13 +499,13 @@ pub async fn connect_input(
         .ssh
         .is_active()
         .then(|| (input.ssh.clone(), input.ssh_secret.clone().filter(|s| !s.is_empty())));
-    let (client, mut info, tunnel) = establish(&uri, name, None, ssh, &state.data_dir).await?;
+    let (conn, mut info, tunnel) = establish_any(&uri, name, None, ssh, &state.data_dir).await?;
     info.id = id.clone();
     info.color = input.color.clone();
     info.access = input.access.clone();
     {
         let mut s = state.sessions.lock().await;
-        s.pool.insert(id.clone(), PooledConn { client, info: info.clone(), _tunnel: tunnel });
+        s.pool.insert(id.clone(), PooledConn { conn, info: info.clone(), _tunnel: tunnel });
         s.active = Some(id);
     }
     Ok(info)
@@ -553,6 +615,9 @@ pub fn import_connections(
 /// `null` and the UI simply hides them.
 #[tauri::command]
 pub async fn server_info(state: State<'_, AppState>) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::server_info(&pg).await;
+    }
     let client = current_client(&state).await?;
     let admin = client.database("admin");
 
@@ -593,6 +658,9 @@ pub async fn list_databases(
     workspace: Option<String>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<DbInfo>> {
+    if let Some(pg) = pg_for(&state, workspace.as_deref()).await? {
+        return crate::pg::ops::list_schemas(&pg).await;
+    }
     let client = client_for(&state, workspace.as_deref()).await?;
     let specs = client.list_databases().await?;
     let mut dbs: Vec<DbInfo> = specs
@@ -609,6 +677,9 @@ pub async fn list_collections(
     workspace: Option<String>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<CollInfo>> {
+    if let Some(pg) = pg_for(&state, workspace.as_deref()).await? {
+        return crate::pg::ops::list_tables(&pg, &database).await;
+    }
     let client = client_for(&state, workspace.as_deref()).await?;
     let specs: Vec<_> = client.database(&database).list_collections().await?.try_collect().await?;
     let mut colls: Vec<CollInfo> = specs
@@ -651,6 +722,9 @@ pub struct DocsPage {
 
 #[tauri::command]
 pub async fn find_documents(req: FindRequest, state: State<'_, AppState>) -> AppResult<DocsPage> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::find(&pg, &req.database, &req.collection, &req.filter, &req.sort, &req.projection, req.limit.unwrap_or(25), req.skip.unwrap_or(0)).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&req.database).collection::<Document>(&req.collection);
 
@@ -690,6 +764,9 @@ pub async fn count_documents(
     filter: String,
     state: State<'_, AppState>,
 ) -> AppResult<CountResult> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::count(&pg, &database, &collection, &filter).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let filter = parse_doc_text(&filter)?;
@@ -737,6 +814,9 @@ pub async fn aggregate_collection(
     read_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<DocsPage> {
+    if pg_for(&state, None).await?.is_some() {
+        return Err(AppError::Other("Aggregation pipelines are MongoDB-only - use the SQL shell for PostgreSQL".into()));
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
 
@@ -785,6 +865,9 @@ pub async fn insert_document(
     doc_text: String,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::insert(&pg, &database, &collection, &doc_text).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let doc = parse_doc_text(&doc_text)?;
@@ -803,6 +886,9 @@ pub async fn replace_document(
     doc_text: String,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::replace(&pg, &database, &collection, &id, &doc_text).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let replacement = parse_doc_text(&doc_text)?;
@@ -820,6 +906,9 @@ pub async fn delete_document(
     id: Value,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::delete(&pg, &database, &collection, &id).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let result = coll.delete_one(doc! {"_id": to_bson(&id)?}).await?;
@@ -837,6 +926,9 @@ pub async fn drop_collection(
     collection: String,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::drop_table(&pg, &database, &collection).await;
+    }
     let client = current_client(&state).await?;
     client
         .database(&database)
@@ -854,6 +946,9 @@ pub async fn clear_collection(
     collection: String,
     state: State<'_, AppState>,
 ) -> AppResult<u64> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::clear_table(&pg, &database, &collection).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let result = coll.delete_many(doc! {}).await?;
@@ -870,6 +965,9 @@ pub async fn duplicate_collection(
     target: String,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::duplicate_table(&pg, &database, &source, &target).await;
+    }
     let client = current_client(&state).await?;
     let db = client.database(&database);
 
@@ -1036,6 +1134,9 @@ async fn sample_refs(
 /// collections concurrently so large databases stay quick.
 #[tauri::command]
 pub async fn db_overview(database: String, state: State<'_, AppState>) -> AppResult<DbOverview> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::db_overview(&pg, &database).await;
+    }
     use futures::StreamExt;
     const MAX_REF_SAMPLES: usize = 150;
     const CONCURRENCY: usize = 8;
@@ -1128,6 +1229,9 @@ pub async fn collection_counts(
     workspace: Option<String>,
     state: State<'_, AppState>,
 ) -> AppResult<std::collections::HashMap<String, u64>> {
+    if let Some(pg) = pg_for(&state, workspace.as_deref()).await? {
+        return crate::pg::ops::table_counts(&pg, &database).await;
+    }
     use futures::StreamExt;
     let client = client_for(&state, workspace.as_deref()).await?;
     let db = client.database(&database);
@@ -1159,6 +1263,9 @@ pub async fn collection_counts(
 /// health line.
 #[tauri::command]
 pub async fn ping_workspace(workspace: Option<String>, state: State<'_, AppState>) -> AppResult<u64> {
+    if let Some(pg) = pg_for(&state, workspace.as_deref()).await? {
+        return crate::pg::ops::ping(&pg).await;
+    }
     let client = client_for(&state, workspace.as_deref()).await?;
     let started = Instant::now();
     tokio::time::timeout(
@@ -1187,6 +1294,9 @@ pub fn save_text_file(path: String, content: String) -> AppResult<()> {
 /// extJSON; the UI picks the interesting fields.
 #[tauri::command]
 pub async fn current_ops(state: State<'_, AppState>) -> AppResult<Vec<Value>> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::current_ops(&pg).await;
+    }
     let client = current_client(&state).await?;
     let raw = client
         .database("admin")
@@ -1210,6 +1320,9 @@ pub async fn current_ops(state: State<'_, AppState>) -> AppResult<Vec<Value>> {
 /// deployments and a string on sharded clusters - accept either.
 #[tauri::command]
 pub async fn kill_op(op_id: Value, state: State<'_, AppState>) -> AppResult<()> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::kill_op(&pg, &op_id).await;
+    }
     let client = current_client(&state).await?;
     let op = to_bson(&op_id)?;
     client
@@ -1222,6 +1335,9 @@ pub async fn kill_op(op_id: Value, state: State<'_, AppState>) -> AppResult<()> 
 /// Current profiler level + slowms threshold for a database.
 #[tauri::command]
 pub async fn profiler_status(database: String, state: State<'_, AppState>) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::stat_statements_status(&pg).await;
+    }
     let client = current_client(&state).await?;
     let raw = client
         .database(&database)
@@ -1239,6 +1355,9 @@ pub async fn set_profiler(
     slow_ms: Option<i32>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::set_stat_statements(&pg, level).await;
+    }
     if !(0..=2).contains(&level) {
         return Err(AppError::Parse("profiler level must be 0, 1, or 2".into()));
     }
@@ -1258,6 +1377,9 @@ pub async fn profiler_entries(
     limit: Option<i64>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<Value>> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::stat_statements(&pg, limit.unwrap_or(50)).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>("system.profile");
     let docs: Vec<Document> = coll
@@ -1275,6 +1397,9 @@ pub async fn profiler_entries(
 /// couple of seconds while the Live tab is open.
 #[tauri::command]
 pub async fn server_status_light(state: State<'_, AppState>) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::server_status_light(&pg).await;
+    }
     let client = current_client(&state).await?;
     let raw = client
         .database("admin")
@@ -1307,6 +1432,9 @@ pub async fn bulk_update(
     update: String,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::bulk_update(&pg, &database, &collection, &filter, &update).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
 
@@ -1339,6 +1467,9 @@ pub async fn bulk_delete(
     filter: String,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::bulk_delete(&pg, &database, &collection, &filter).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
 
@@ -1384,6 +1515,9 @@ pub async fn aggregate_stage_stats(
     allow_disk_use: bool,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<StageStat>> {
+    if pg_for(&state, None).await?.is_some() {
+        return Err(AppError::Other("Aggregation pipelines are MongoDB-only - use the SQL shell for PostgreSQL".into()));
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
 
@@ -1515,6 +1649,28 @@ pub async fn copy_collection(
         && req.source_collection == target_collection
     {
         return Err(AppError::Other("source and target are the same collection".into()));
+    }
+
+    match (
+        conn_for(&state, req.source_workspace.as_deref()).await?,
+        conn_for(&state, Some(&req.target_workspace)).await?,
+    ) {
+        (DbConn::Pg(src), DbConn::Pg(dst)) => {
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.jobs.lock().unwrap().insert(req.job_id.clone(), cancel.clone());
+            let emit = |copied: u64, total: Option<u64>| {
+                let _ = app.emit("copy-progress", CopyProgress { job_id: req.job_id.clone(), copied, total });
+            };
+            let result = crate::pg::ops::copy_table(
+                &src, &dst, &req.source_database, &req.source_collection, &target_database,
+                &target_collection, &req.filter, req.copy_indexes, &cancel, &emit,
+            )
+            .await;
+            state.jobs.lock().unwrap().remove(&req.job_id);
+            return result;
+        }
+        (DbConn::Mongo(_), DbConn::Mongo(_)) => {}
+        _ => return Err(AppError::Other("copying between MongoDB and PostgreSQL isn't supported".into())),
     }
 
     let filter = parse_doc_text(&req.filter)?;
@@ -1726,6 +1882,33 @@ pub async fn diff_collections(
     state: State<'_, AppState>,
 ) -> AppResult<DiffOutcome> {
     let started = Instant::now();
+
+    match (
+        conn_for(&state, req.source_workspace.as_deref()).await?,
+        conn_for(&state, Some(&req.target_workspace)).await?,
+    ) {
+        (DbConn::Pg(src), DbConn::Pg(dst)) => {
+            let cancel = Arc::new(AtomicBool::new(false));
+            state.jobs.lock().unwrap().insert(req.job_id.clone(), cancel.clone());
+            let emit = |phase: &str, processed: u64, total: Option<u64>| {
+                let _ = app.emit(
+                    "diff-progress",
+                    DiffProgress { job_id: req.job_id.clone(), phase: phase.to_string(), processed, total },
+                );
+            };
+            let result = crate::pg::ops::diff_tables(
+                &src, &dst, &req.source_database, &req.source_collection, &req.target_database,
+                &req.target_collection, &req.filter, &cancel, &emit,
+            )
+            .await;
+            state.jobs.lock().unwrap().remove(&req.job_id);
+            let mut outcome = result?;
+            outcome.exec_ms = started.elapsed().as_millis() as u64;
+            return Ok(outcome);
+        }
+        (DbConn::Mongo(_), DbConn::Mongo(_)) => {}
+        _ => return Err(AppError::Other("comparing MongoDB with PostgreSQL isn't supported".into())),
+    }
 
     let src_client = client_for(&state, req.source_workspace.as_deref()).await?;
     let dst_client = client_for(&state, Some(&req.target_workspace)).await?;
@@ -1940,6 +2123,20 @@ pub struct SyncRequest {
 /// documents were written or removed.
 #[tauri::command]
 pub async fn sync_documents(req: SyncRequest, state: State<'_, AppState>) -> AppResult<u64> {
+    match (
+        conn_for(&state, req.source_workspace.as_deref()).await?,
+        conn_for(&state, Some(&req.target_workspace)).await?,
+    ) {
+        (DbConn::Pg(src), DbConn::Pg(dst)) => {
+            return crate::pg::ops::sync_rows(
+                &src, &dst, &req.source_database, &req.source_collection, &req.target_database,
+                &req.target_collection, &req.action, &req.ids,
+            )
+            .await;
+        }
+        (DbConn::Mongo(_), DbConn::Mongo(_)) => {}
+        _ => return Err(AppError::Other("syncing between MongoDB and PostgreSQL isn't supported".into())),
+    }
     let src_client = client_for(&state, req.source_workspace.as_deref()).await?;
     let dst_client = client_for(&state, Some(&req.target_workspace)).await?;
     let src = src_client
@@ -2006,6 +2203,15 @@ pub struct IndexInfo {
     pub usage_ops: Option<i64>,
     /// ISO timestamp the usage counter has been accumulating since.
     pub usage_since: Option<String>,
+    /// Postgres only: primary key index, access method, CREATE INDEX text, bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<i64>,
 }
 
 #[tauri::command]
@@ -2014,6 +2220,9 @@ pub async fn list_indexes(
     collection: String,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<IndexInfo>> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::list_indexes(&pg, &database, &collection).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let models: Vec<IndexModel> = coll.list_indexes().await?.try_collect().await?;
@@ -2059,6 +2268,10 @@ pub async fn list_indexes(
                 partial_filter: o.partial_filter_expression.map(doc_to_value),
                 usage_ops: u.map(|(ops, _)| *ops),
                 usage_since: u.and_then(|(_, since)| since.clone()),
+                primary: None,
+                method: None,
+                definition: None,
+                size: None,
                 name,
             }
         })
@@ -2078,8 +2291,17 @@ pub async fn create_index(
     hidden: Option<bool>,
     partial_filter_text: Option<String>,
     collation_locale: Option<String>,
+    method: Option<String>,
+    concurrently: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<String> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::create_index(
+            &pg, &database, &collection, &keys_text, name, unique, method, partial_filter_text,
+            concurrently.unwrap_or(false),
+        )
+        .await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let keys = parse_doc_text(&keys_text)?;
@@ -2131,6 +2353,9 @@ pub async fn drop_index(
     name: String,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::drop_index(&pg, &database, &name).await;
+    }
     let client = current_client(&state).await?;
     client
         .database(&database)
@@ -2146,6 +2371,9 @@ pub async fn collection_stats(
     collection: String,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::table_stats(&pg, &database, &collection).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let cursor = coll
@@ -2182,8 +2410,16 @@ pub async fn explain_query(
     projection: String,
     pipeline_stages: Option<Vec<StageInput>>,
     verbosity: Option<String>,
+    limit: Option<i64>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        if pipeline_stages.is_some() {
+            return Err(AppError::Other("Aggregation pipelines are MongoDB-only".into()));
+        }
+        let v = verbosity.as_deref().unwrap_or("executionStats");
+        return crate::pg::ops::explain(&pg, &database, &collection, &filter, &sort, &projection, v, limit).await;
+    }
     let client = current_client(&state).await?;
     let db = client.database(&database);
     let verbosity = verbosity.unwrap_or_else(|| "executionStats".into());
@@ -2351,6 +2587,9 @@ pub async fn collection_fields(
     limit: Option<i64>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<String>> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::fields(&pg, &database, &collection).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let limit = limit.unwrap_or(1000).clamp(10, 5000);
@@ -2396,6 +2635,9 @@ pub async fn analyze_schema(
     sample_size: Option<i64>,
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::analyze_schema(&pg, &database, &collection, sample_size.unwrap_or(1000)).await;
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let sample_size = sample_size.unwrap_or(1000).clamp(10, 10_000);
@@ -2500,6 +2742,24 @@ pub async fn export_collection(
     use std::io::Write;
 
     let started = Instant::now();
+    if let Some(pg) = pg_for(&state, None).await? {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let job = job_id.clone().unwrap_or_default();
+        if !job.is_empty() {
+            state.jobs.lock().unwrap().insert(job.clone(), cancel.clone());
+        }
+        let emit = |copied: u64, total: Option<u64>| {
+            if !job.is_empty() {
+                let _ = app.emit("copy-progress", CopyProgress { job_id: job.clone(), copied, total });
+            }
+        };
+        let result = crate::pg::ops::export(&pg, &database, &collection, &filter, &sort, &format, &path, &cancel, &emit).await;
+        if !job.is_empty() {
+            state.jobs.lock().unwrap().remove(&job);
+        }
+        let (documents, canceled) = result?;
+        return Ok(CopyOutcome { documents, indexes: 0, canceled, exec_ms: started.elapsed().as_millis() as u64 });
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
     let filter = parse_doc_text(&filter)?;
@@ -2718,6 +2978,24 @@ pub async fn import_documents(
     state: State<'_, AppState>,
 ) -> AppResult<CopyOutcome> {
     let started = Instant::now();
+    if let Some(pg) = pg_for(&state, None).await? {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let job = job_id.clone().unwrap_or_default();
+        if !job.is_empty() {
+            state.jobs.lock().unwrap().insert(job.clone(), cancel.clone());
+        }
+        let emit = |copied: u64| {
+            if !job.is_empty() {
+                let _ = app.emit("copy-progress", CopyProgress { job_id: job.clone(), copied, total: None });
+            }
+        };
+        let result = crate::pg::ops::import(&pg, &database, &collection, &path, &cancel, &emit).await;
+        if !job.is_empty() {
+            state.jobs.lock().unwrap().remove(&job);
+        }
+        let (documents, canceled) = result?;
+        return Ok(CopyOutcome { documents, indexes: 0, canceled, exec_ms: started.elapsed().as_millis() as u64 });
+    }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
 
@@ -2915,7 +3193,7 @@ async fn run_import(
 
 /// Minimal RFC-4180 CSV parser: quoted fields, escaped quotes, newlines
 /// inside quotes. Returns rows of cells.
-fn parse_csv(text: &str) -> AppResult<Vec<Vec<String>>> {
+pub(crate) fn parse_csv(text: &str) -> AppResult<Vec<Vec<String>>> {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut cell = String::new();
@@ -2990,10 +3268,58 @@ fn csv_cell_to_bson(key: &str, cell: &str) -> Bson {
 }
 
 // ---------------------------------------------------------------------------
+// PostgreSQL-only commands
+// ---------------------------------------------------------------------------
+
+/// Columns, primary key and kind of a Postgres table - the UI needs the key to
+/// address rows and the types for inserts and prompts.
+#[tauri::command]
+pub async fn table_meta(
+    database: String,
+    collection: String,
+    workspace: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<crate::pg::ops::TableMeta> {
+    match pg_for(&state, workspace.as_deref()).await? {
+        Some(pg) => crate::pg::ops::table_meta(&pg, &database, &collection).await,
+        None => Err(AppError::Other("table metadata is only available for PostgreSQL".into())),
+    }
+}
+
+/// Metadata of every table in a Postgres schema, keyed by table name.
+#[tauri::command]
+pub async fn schema_meta(
+    database: String,
+    workspace: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<std::collections::HashMap<String, crate::pg::ops::TableMeta>> {
+    match pg_for(&state, workspace.as_deref()).await? {
+        Some(pg) => crate::pg::ops::schema_meta(&pg, &database).await,
+        None => Err(AppError::Other("schema metadata is only available for PostgreSQL".into())),
+    }
+}
+
+/// One read-only SQL query with a row cap (AI Studio). The statement is
+/// checked (single SELECT, no side-effect functions) and runs inside a
+/// read-only transaction, so the server refuses any write regardless.
+#[tauri::command]
+pub async fn sql_query(
+    database: String,
+    sql: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> AppResult<DocsPage> {
+    match pg_for(&state, None).await? {
+        Some(pg) => crate::pg::ops::query_read_only(&pg, &database, &sql, limit.unwrap_or(AGG_SAFETY_LIMIT as usize).clamp(1, 5000)).await,
+        None => Err(AppError::Other("SQL queries are only available for PostgreSQL".into())),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // shell execution
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellOutcome {
     pub kind: String, // "docs" | "value" | "message" | "useDb"
@@ -3062,6 +3388,9 @@ pub async fn run_shell(
     read_only: Option<bool>,
     state: State<'_, AppState>,
 ) -> AppResult<ShellOutcome> {
+    if let Some(pg) = pg_for(&state, None).await? {
+        return crate::pg::ops::run_shell(&pg, &database, &text, read_only.unwrap_or(false)).await;
+    }
     let statement = shell::parse_statement(&text)?;
     if read_only.unwrap_or(false) {
         if let Some(what) = statement_writes(&statement) {

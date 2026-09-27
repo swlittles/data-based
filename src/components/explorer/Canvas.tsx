@@ -5,6 +5,7 @@ import { useExplorer } from "@/stores/explorer";
 import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { cn } from "@/lib/utils";
+import { useEngine } from "@/stores/connections";
 
 const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 const MOD = IS_MAC ? "⌘" : "Ctrl ";
@@ -24,6 +25,7 @@ export function Canvas() {
   const setPalette = useUi((s) => s.setPalette);
   const advancedMode = useSettings((s) => s.advancedMode);
   const setAdvancedMode = useSettings((s) => s.setAdvancedMode);
+  const pg = useEngine() === "postgres";
 
   if (tabs.length === 0) {
     const first = selectedDb ? collections[selectedDb]?.[0]?.name : undefined;
@@ -37,7 +39,7 @@ export function Canvas() {
                 onClick={() => (first && selectedDb ? openCollection(selectedDb, first) : setPalette(true))}
               >
                 <Rows3 />
-                Open a collection <span className="kbd">{MOD}O</span>
+                Open a {pg ? "table" : "collection"} <span className="kbd">{MOD}O</span>
               </button>
               <button className="s" onClick={() => setPalette(true)}>
                 <Search />
@@ -52,7 +54,8 @@ export function Canvas() {
                   }}
                 >
                   <Terminal />
-                  Shell{!advancedMode && " (advanced)"}
+                  {pg ? "SQL shell" : "Shell"}
+                  {!advancedMode && " (advanced)"}
                 </button>
               )}
             </>

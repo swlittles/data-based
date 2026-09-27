@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mongo Bongo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.swlittles.mongobongo",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -40,8 +40,8 @@
     "targets": "all",
     "category": "DeveloperTool",
     "createUpdaterArtifacts": true,
-    "shortDescription": "Free, lightweight, no-nonsense MongoDB client",
-    "longDescription": "Mongo Bongo is a free and open-source MongoDB desktop client. Browse data in table or document form, edit documents field by field, build aggregation pipelines, inspect indexes and schema, and run real shell statements - with credentials encrypted in your OS keychain and production connections opening read-only.",
+    "shortDescription": "Free, lightweight, no-nonsense MongoDB and PostgreSQL client",
+    "longDescription": "Mongo Bongo is a free and open-source MongoDB and PostgreSQL desktop client. Browse data in table or document form, edit documents field by field, build aggregation pipelines, inspect indexes and schema, and run real shell statements - with credentials encrypted in your OS keychain and production connections opening read-only.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

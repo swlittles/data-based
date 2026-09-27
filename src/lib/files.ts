@@ -7,7 +7,15 @@ import {
   type CopyProgress,
   type ImportOutcome,
   type ImportPreview,
+  writeGuard,
 } from "@/lib/api";
+
+/** "documents" / "rows" for the active workspace's engine. */
+const unitWord = (n?: number) => {
+  const pg = writeGuard.engine() === "postgres";
+  const one = pg ? "row" : "document";
+  return n === 1 ? one : `${one}s`;
+};
 
 /** Run a cancellable job with a live progress toast (docs so far + cancel). */
 async function withProgressToast(
@@ -19,11 +27,12 @@ async function withProgressToast(
     action: { label: "Cancel", onClick: () => void api.cancelJob(jobId) },
   });
   let unlisten: UnlistenFn | null = null;
+  const unit = unitWord();
   try {
     unlisten = await listen<CopyProgress>("copy-progress", (e) => {
       if (e.payload.jobId !== jobId) return;
       const total = e.payload.total ? ` / ${e.payload.total.toLocaleString()}` : "";
-      toast.loading(`${label} - ${e.payload.copied.toLocaleString()}${total} documents`, {
+      toast.loading(`${label} - ${e.payload.copied.toLocaleString()}${total} ${unit}`, {
         id: toastId,
         action: { label: "Cancel", onClick: () => void api.cancelJob(jobId) },
       });
@@ -42,6 +51,12 @@ async function withProgressToast(
 
 export type ExportFormat = "json" | "csv" | "ndjson" | "bson";
 
+/** Export formats the active workspace's engine can write (no BSON for
+ *  PostgreSQL). */
+export function exportFormats(): ExportFormat[] {
+  return writeGuard.engine() === "postgres" ? ["json", "ndjson", "csv"] : ["json", "ndjson", "csv", "bson"];
+}
+
 /** Export matching documents to a known path - streamed, cancellable, with a
  *  progress toast. Returns the outcome (null on error). */
 export async function runExport(args: {
@@ -52,14 +67,18 @@ export async function runExport(args: {
   format: ExportFormat;
   path: string;
 }) {
+  if (!exportFormats().includes(args.format)) {
+    toast.error(`${args.format.toUpperCase()} export isn't available for PostgreSQL - use JSON, NDJSON or CSV`);
+    return null;
+  }
   const outcome = await withProgressToast(`Exporting ${args.collection}`, (jobId) =>
     api.exportCollection({ ...args, jobId })
   );
   if (!outcome) return null;
   if (outcome.canceled) {
-    toast.info(`Export canceled - ${outcome.documents.toLocaleString()} documents written`);
+    toast.info(`Export canceled - ${outcome.documents.toLocaleString()} ${unitWord(outcome.documents)} written`);
   } else {
-    toast.success(`Exported ${outcome.documents.toLocaleString()} document${outcome.documents === 1 ? "" : "s"}`);
+    toast.success(`Exported ${outcome.documents.toLocaleString()} ${unitWord(outcome.documents)}`);
   }
   return outcome;
 }
@@ -73,6 +92,10 @@ export async function exportCollection(args: {
   format: ExportFormat;
 }) {
   const ext = args.format;
+  if (!exportFormats().includes(ext)) {
+    toast.error(`${ext.toUpperCase()} export isn't available for PostgreSQL - use JSON, NDJSON or CSV`);
+    return;
+  }
   const path = await save({
     title: `Export ${args.collection}`,
     defaultPath: `${args.collection}.${ext}`,
@@ -144,25 +167,30 @@ export async function runConnectionImport(
   }
 }
 
-/** Prompt for a JSON/NDJSON/CSV/BSON file and import its documents - 
- *  streamed in batches, cancellable. Returns true when anything landed. */
+/** Prompt for a JSON/NDJSON/CSV/BSON file (no BSON for PostgreSQL) and import
+ *  its documents / rows - streamed in batches, cancellable. Returns true when
+ *  anything landed. */
 export async function importDocuments(database: string, collection: string): Promise<boolean> {
+  const pg = writeGuard.engine() === "postgres";
+  const extensions = pg ? ["json", "ndjson", "jsonl", "csv"] : ["json", "ndjson", "jsonl", "csv", "bson"];
   const path = await open({
     title: `Import into ${collection}`,
     multiple: false,
-    filters: [
-      { name: "Data files", extensions: ["json", "ndjson", "jsonl", "csv", "bson"] },
-    ],
+    filters: [{ name: "Data files", extensions }],
   }).catch(() => null);
   if (!path || typeof path !== "string") return false;
+  if (pg && /\.bson$/i.test(path)) {
+    toast.error("BSON files can't be imported into PostgreSQL - use JSON, NDJSON or CSV");
+    return false;
+  }
   const outcome = await withProgressToast(`Importing into ${collection}`, (jobId) =>
     api.importDocuments(database, collection, path, jobId)
   );
   if (!outcome) return false;
   if (outcome.canceled) {
-    toast.info(`Import canceled - ${outcome.documents.toLocaleString()} documents inserted`);
+    toast.info(`Import canceled - ${outcome.documents.toLocaleString()} ${unitWord(outcome.documents)} inserted`);
   } else {
-    toast.success(`Imported ${outcome.documents.toLocaleString()} document${outcome.documents === 1 ? "" : "s"}`);
+    toast.success(`Imported ${outcome.documents.toLocaleString()} ${unitWord(outcome.documents)}`);
   }
   return outcome.documents > 0;
 }

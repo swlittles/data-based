@@ -84,7 +84,7 @@ pub fn repair_userinfo(uri: &str) -> Option<String> {
     (fixed != uri).then_some(fixed)
 }
 
-fn pct_decode(s: &str) -> String {
+pub fn pct_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -127,6 +127,9 @@ fn split_host_port(h: &str) -> (String, Option<u16>) {
 /// so a round trip through [`ConnFields::build_uri`] keeps them.
 pub fn fields_from_uri(uri: &str) -> Option<(ConnFields, Option<String>)> {
     let uri = uri.trim();
+    if crate::pg::is_pg_uri(uri) {
+        return pg_fields_from_uri(uri);
+    }
     let (scheme, rest) = uri.split_once("://")?;
     if scheme != "mongodb" && scheme != "mongodb+srv" {
         return None;
@@ -190,6 +193,39 @@ pub fn fields_from_uri(uri: &str) -> Option<(ConnFields, Option<String>)> {
     Some((f, password))
 }
 
+/// `postgresql://` URI → fields. Parameters without a dedicated field are kept
+/// in `extra_options` so a round trip through `build_uri` preserves them.
+fn pg_fields_from_uri(uri: &str) -> Option<(ConnFields, Option<String>)> {
+    let u = crate::pg::parse_uri(uri).ok()?;
+    let mut hosts = u.hosts.iter().map(|(h, p)| match p {
+        Some(p) if h.contains(':') => format!("[{h}]:{p}"),
+        Some(p) => format!("{h}:{p}"),
+        None => h.clone(),
+    });
+    let (host, port) = u.hosts.first().cloned().unwrap_or(("localhost".into(), None));
+    hosts.next();
+    let mut extra: Vec<String> = u.params.iter().map(|(k, v)| format!("{}={}", pct_encode(k), pct_encode(v))).collect();
+    if let Some(schema) = &u.schema {
+        extra.push(format!("schema={}", pct_encode(schema)));
+    }
+    let f = ConnFields {
+        scheme: "postgresql".into(),
+        host,
+        port: port.or(Some(5432)),
+        extra_hosts: hosts.collect(),
+        username: u.user.clone(),
+        default_database: u.dbname.clone(),
+        ssl_mode: Some(u.sslmode.clone()),
+        tls_enabled: !matches!(u.sslmode.as_str(), "disable" | "allow" | "prefer"),
+        tls_ca_file: u.sslrootcert.clone(),
+        tls_cert_key_file: u.sslcert.clone(),
+        tls_key_file: u.sslkey.clone(),
+        extra_options: (!extra.is_empty()).then(|| extra.join("&")),
+        ..Default::default()
+    };
+    Some((f, u.password))
+}
+
 /// Structured connection fields. Everything here is non-secret; the password
 /// (or full URI for uri-kind profiles) is stored encrypted separately.
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -214,6 +250,10 @@ pub struct ConnFields {
     pub server_selection_timeout_ms: Option<u32>,
     pub max_pool_size: Option<u32>,
     pub extra_options: Option<String>,
+    /// PostgreSQL `sslmode`: disable | prefer | require | verify-ca | verify-full.
+    pub ssl_mode: Option<String>,
+    /// PostgreSQL client key (`sslkey`) - `tls_cert_key_file` is `sslcert`.
+    pub tls_key_file: Option<String>,
 }
 
 fn none_if_blank(v: &Option<String>) -> Option<&str> {
@@ -222,7 +262,65 @@ fn none_if_blank(v: &Option<String>) -> Option<&str> {
 
 impl ConnFields {
     /// Build a connection URI. `password` comes decrypted from the vault.
+    pub fn is_pg(&self) -> bool {
+        self.scheme.starts_with("postgres")
+    }
+
+    fn build_pg_uri(&self, password: Option<&str>) -> AppResult<String> {
+        let host = self.host.trim();
+        if host.is_empty() {
+            return Err(AppError::Other("host is required".into()));
+        }
+        let mut uri = String::from("postgresql://");
+        if let Some(user) = none_if_blank(&self.username) {
+            uri.push_str(&pct_encode(user));
+            if let Some(pass) = password.filter(|p| !p.is_empty()) {
+                uri.push(':');
+                uri.push_str(&pct_encode(pass));
+            }
+            uri.push('@');
+        }
+        let bracket = |h: &str| if h.contains(':') && !h.starts_with('[') { format!("[{h}]") } else { h.to_string() };
+        uri.push_str(&bracket(host));
+        if let Some(port) = self.port {
+            uri.push_str(&format!(":{port}"));
+        }
+        for extra in self.extra_hosts.iter().map(|h| h.trim()).filter(|h| !h.is_empty()) {
+            uri.push(',');
+            uri.push_str(extra);
+        }
+        uri.push('/');
+        if let Some(db) = none_if_blank(&self.default_database) {
+            uri.push_str(&pct_encode(db));
+        }
+        let mut params: Vec<String> = Vec::new();
+        if let Some(mode) = none_if_blank(&self.ssl_mode) {
+            if mode != "prefer" {
+                params.push(format!("sslmode={}", pct_encode(mode)));
+            }
+        }
+        for (k, v) in [("sslrootcert", &self.tls_ca_file), ("sslcert", &self.tls_cert_key_file), ("sslkey", &self.tls_key_file)] {
+            if let Some(v) = none_if_blank(v) {
+                params.push(format!("{k}={}", pct_encode(v)));
+            }
+        }
+        if let Some(ms) = self.connect_timeout_ms {
+            params.push(format!("connect_timeout={}", (ms / 1000).max(1)));
+        }
+        if let Some(extra) = none_if_blank(&self.extra_options) {
+            params.push(extra.trim_matches(&['?', '&'][..]).to_string());
+        }
+        if !params.is_empty() {
+            uri.push('?');
+            uri.push_str(&params.join("&"));
+        }
+        Ok(uri)
+    }
+
     pub fn build_uri(&self, password: Option<&str>) -> AppResult<String> {
+        if self.is_pg() {
+            return self.build_pg_uri(password);
+        }
         let scheme = if self.scheme == "mongodb+srv" { "mongodb+srv" } else { "mongodb" };
         let host = self.host.trim();
         if host.is_empty() {
@@ -394,6 +492,8 @@ pub struct ProfileInput {
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSummary {
     pub id: String,
+    /// "mongo" | "postgres" - derived from the connection string scheme.
+    pub engine: String,
     pub name: String,
     pub color: Option<String>,
     pub access: String,
@@ -433,13 +533,23 @@ impl StoredProfile {
             ProfileKind::Fields => (
                 self.fields.host_summary(),
                 self.fields.scheme == "mongodb+srv",
-                self.fields.tls_enabled || self.fields.scheme == "mongodb+srv",
+                if self.fields.is_pg() {
+                    matches!(self.fields.ssl_mode.as_deref(), Some("require" | "verify-ca" | "verify-full"))
+                } else {
+                    self.fields.tls_enabled || self.fields.scheme == "mongodb+srv"
+                },
             ),
             ProfileKind::Uri => {
                 let s = self.uri_summary.clone().unwrap_or_default();
                 let srv = s.starts_with("mongodb+srv");
-                (s, srv, srv)
+                let tls = srv || (crate::pg::is_pg_uri(&s) && s.contains("sslmode=") && !s.contains("sslmode=disable") && !s.contains("sslmode=prefer") && !s.contains("sslmode=allow"));
+                (s, srv, tls)
             }
+        };
+        let engine = match self.kind {
+            ProfileKind::Fields if self.fields.is_pg() => "postgres",
+            ProfileKind::Uri if crate::pg::is_pg_uri(self.uri_summary.as_deref().unwrap_or("")) => "postgres",
+            _ => "mongo",
         };
         // URI profiles: derive the fields from the (password-less) summary so
         // the "Host and credentials" tab shows the real host and username.
@@ -454,6 +564,7 @@ impl StoredProfile {
         };
         ProfileSummary {
             id: self.id.clone(),
+            engine: engine.to_string(),
             name: self.name.clone(),
             color: self.color.clone(),
             access: self.access.clone(),
@@ -924,7 +1035,8 @@ mod tests {
         assert_eq!(f.host, "cluster0.abc.mongodb.net");
         assert_eq!(f.port, None);
         assert!(pass.is_none());
-        assert!(fields_from_uri("postgres://x").is_none());
+        assert!(fields_from_uri("mysql://x").is_none());
+        assert_eq!(fields_from_uri("postgres://x").unwrap().0.scheme, "postgresql");
     }
 
     #[test]
@@ -933,5 +1045,24 @@ mod tests {
             repair_userinfo("mongodb://user:pa:ss@host/db").unwrap(),
             "mongodb://user:pa%3Ass@host/db"
         );
+    }
+
+    #[test]
+    fn pg_fields_round_trip() {
+        let uri = "postgresql://app:p%40ss@db.neon.tech:5433/shop?sslmode=require&sslrootcert=%2Fca.pem&application_name=x&schema=sales";
+        let (f, pass) = fields_from_uri(uri).unwrap();
+        assert_eq!(f.scheme, "postgresql");
+        assert_eq!(f.port, Some(5433));
+        assert_eq!(f.default_database.as_deref(), Some("shop"));
+        assert_eq!(f.ssl_mode.as_deref(), Some("require"));
+        assert_eq!(pass.as_deref(), Some("p@ss"));
+        let rebuilt = f.build_uri(pass.as_deref()).unwrap();
+        let (again, pass2) = fields_from_uri(&rebuilt).unwrap();
+        assert_eq!(again.host, "db.neon.tech");
+        assert_eq!(again.tls_ca_file.as_deref(), Some("/ca.pem"));
+        assert_eq!(pass2.as_deref(), Some("p@ss"));
+        assert!(rebuilt.contains("application_name=x"));
+        assert!(rebuilt.contains("schema=sales"));
+        assert_eq!(f.host_summary(), "app@db.neon.tech:5433/shop");
     }
 }

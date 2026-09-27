@@ -45,6 +45,16 @@ describe("chartFromDocs", () => {
     });
   });
 
+  it("reads SQL rows: aliased columns, big numbers as strings", () => {
+    const sql: VizPlan = { kind: "sql", explanation: "", chart: { type: "line", labelField: "day", valueField: "revenue" } };
+    const rows = [
+      { day: "2026-03-01", revenue: "9007199254740993" },
+      { day: "2026-03-02", revenue: 12.5 },
+      { day: "2026-03-03", revenue: null },
+    ];
+    expect(chartFromDocs(rows, sql, "line")).toMatchObject({ labels: ["2026-03-01", "2026-03-02"], values: [9007199254740993, 12.5] });
+  });
+
   it("returns null when nothing is plottable", () => {
     expect(chartFromDocs([{ _id: "a" }], plan, "bar")).toBeNull();
     expect(chartFromDocs([{ _id: "a", total: { n: 1 } }], { ...plan, chart: null }, "bar")).toBeNull();

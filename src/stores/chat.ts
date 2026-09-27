@@ -3,7 +3,8 @@ import { persist } from "zustand/middleware";
 import type { Doc } from "@/lib/api";
 import type { ChartKind, TokenUsage, VizPlan } from "@/lib/ai";
 
-/** Scope value meaning "every collection in the database" (joins allowed). */
+/** Scope value meaning "every collection in the database" (joins allowed);
+ *  for PostgreSQL, every table in the schema. */
 export const WHOLE_DB = "*";
 
 /** Result rows kept per turn on disk (the live copy keeps everything). */
@@ -21,12 +22,14 @@ export interface ChatTurn {
   /** Refused: the request tried to change data. */
   blocked?: boolean;
   plan?: VizPlan;
-  /** mongosh rendering of the plan. */
+  /** mongosh rendering of the plan, or the SQL (PostgreSQL). */
   query?: string;
   /** Collection the query ran on (the primary, for joins). */
   runCollection?: string;
   docs?: Doc[];
   docCount?: number;
+  /** The backend stopped at the row cap (SQL results). */
+  capped?: boolean;
   execMs?: number;
   chartType?: ChartKind | null;
   summary?: string | null;

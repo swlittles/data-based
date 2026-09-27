@@ -1,7 +1,8 @@
 /**
  * Browser-only Tauri shim for `npm run dev` outside the desktop shell. Lets
  * the whole UI be exercised (and screenshotted) against an in-memory MongoDB
- * stand-in. Never bundled into the app: main.tsx imports it only when
+ * stand-in, plus a PostgreSQL one (the "shop-pg" profile) dispatched by the
+ * active workspace. Never bundled into the app: main.tsx imports it only when
  * `import.meta.env.DEV` and no real `__TAURI_INTERNALS__` exists.
  */
 type Doc = Record<string, unknown>;
@@ -44,9 +45,10 @@ const store: Record<string, Record<string, Doc[]>> = {
 };
 
 const profiles = [
-  { id: "p1", name: "TEST", color: "#00ED64", access: "readwrite", kind: "fields", hostSummary: "localhost:27017", srv: false, tls: false, hasSecret: false, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "mongodb", host: "localhost", port: 27017, extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: new Date().toISOString() },
-  { id: "p2", name: "staging", color: "#7FE1FF", access: "readonly", kind: "uri", hostSummary: "mongodb+srv://ops@staging.mongodb.net/app", srv: true, tls: true, hasSecret: true, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "mongodb+srv", host: "staging.mongodb.net", username: "ops", defaultDatabase: "app", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
-  { id: "p3", name: "prod", color: "#F0705F", access: "production", kind: "uri", hostSummary: "mongodb://app@10.0.3.12:27017", srv: false, tls: false, hasSecret: true, ssh: { enabled: true, host: "bastion.example.com", port: 22, username: "ubuntu", auth: "key", keyPath: "~/.ssh/id_ed25519" }, hasSshSecret: false, fields: { scheme: "mongodb", host: "10.0.3.12", port: 27017, username: "app", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
+  { id: "p1", engine: "mongo", name: "TEST", color: "#00ED64", access: "readwrite", kind: "fields", hostSummary: "localhost:27017", srv: false, tls: false, hasSecret: false, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "mongodb", host: "localhost", port: 27017, extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: new Date().toISOString() },
+  { id: "p2", engine: "mongo", name: "staging", color: "#7FE1FF", access: "readonly", kind: "uri", hostSummary: "mongodb+srv://ops@staging.mongodb.net/app", srv: true, tls: true, hasSecret: true, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "mongodb+srv", host: "staging.mongodb.net", username: "ops", defaultDatabase: "app", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
+  { id: "p3", engine: "mongo", name: "prod", color: "#F0705F", access: "production", kind: "uri", hostSummary: "mongodb://app@10.0.3.12:27017", srv: false, tls: false, hasSecret: true, ssh: { enabled: true, host: "bastion.example.com", port: 22, username: "ubuntu", auth: "key", keyPath: "~/.ssh/id_ed25519" }, hasSshSecret: false, fields: { scheme: "mongodb", host: "10.0.3.12", port: 27017, username: "app", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false }, lastUsedAt: null },
+  { id: "pg1", engine: "postgres", name: "shop-pg", color: "#8DA2FB", access: "readwrite", kind: "fields", hostSummary: "postgresql://app@db.example.com:5432/shop", srv: false, tls: true, hasSecret: true, ssh: { enabled: false, host: "", port: 22, username: "", auth: "key", keyPath: null }, hasSshSecret: false, fields: { scheme: "postgresql", host: "db.example.com", port: 5432, username: "app", defaultDatabase: "shop", extraHosts: [], directConnection: false, tlsEnabled: false, tlsInsecure: false, sslMode: "require" }, lastUsedAt: new Date(Date.now() - 3_600_000).toISOString() },
 ];
 
 const info = (p: (typeof profiles)[number]) => ({
@@ -54,13 +56,523 @@ const info = (p: (typeof profiles)[number]) => ({
   profileId: p.id,
   name: p.name,
   hostSummary: p.hostSummary,
-  serverVersion: "7.0.11",
-  topology: "Replica set · rs0",
-  latencyMs: 12,
   color: p.color,
   access: p.access,
   ssh: p.ssh.enabled ? `${p.ssh.username}@${p.ssh.host}` : null,
+  ...(p.engine === "postgres"
+    ? { engine: "postgres", serverVersion: "17.2", topology: "PostgreSQL · primary", latencyMs: 18, database: "shop", defaultSchema: "public" }
+    : { engine: "mongo", serverVersion: "7.0.11", topology: "Replica set · rs0", latencyMs: 12 }),
 });
+
+// ---------------------------------------------------------------------------
+// PostgreSQL stand-in: schema "public" (customers, orders, order_items,
+// events without a primary key, a view) and "analytics" (a materialized view).
+// Rows are plain JSON: numbers for ids / numeric, ISO strings for timestamps.
+// ---------------------------------------------------------------------------
+
+/** Workspaces (ids) that speak PostgreSQL, and the active one. */
+const pgWorkspaces = new Set<string>(["pg1"]);
+let activeWs: string | null = null;
+
+const iso = (daysAgo: number, h = 9) => new Date(Date.UTC(2026, 7, 14 - daysAgo, h, 12, 4)).toISOString();
+const cities = [["Lagos", "NG"], ["Stockholm", "SE"], ["Chennai", "IN"], ["Berlin", "DE"], ["Osaka", "JP"], ["Milan", "IT"]];
+
+const pgCustomers: Doc[] = names.map((n, i) => ({
+  id: i + 1,
+  name: n,
+  email: `${n.toLowerCase().replace(" ", ".")}@example.com`,
+  tier: tiers[i],
+  active: i % 3 !== 0,
+  meta: { plan: tiers[i] === "gold" ? "pro" : "basic", referrer: i % 4 === 0 ? "newsletter" : null },
+  created_at: iso(30 + i),
+}));
+const pgOrders: Doc[] = Array.from({ length: 60 }, (_, i) => ({
+  id: 1001 + i,
+  customer_id: (i % 12) + 1,
+  status: statuses[i % 12],
+  total: Math.round((28.75 + (i * 137.3) % 2200) * 100) / 100,
+  currency: "USD",
+  shipping: { city: cities[i % 6][0], country: cities[i % 6][1], express: i % 5 === 0 },
+  created_at: iso(i % 9, 9 + (i % 12)),
+  updated_at: iso(i % 9, 10),
+}));
+const pgItems: Doc[] = pgOrders.flatMap((o, i) =>
+  [
+    { order_id: o.id, line: 1, sku: "KB-91-BLK", qty: 1, price: 129.0 },
+    { order_id: o.id, line: 2, sku: "MS-04-WHT", qty: 2, price: 39.5 },
+  ].slice(0, 1 + (i % 2))
+);
+const pgEvents: Doc[] = Array.from({ length: 24 }, (_, i) => ({
+  at: iso(i % 6, 8 + (i % 10)),
+  kind: ["page_view", "signup", "checkout"][i % 3],
+  payload: { path: ["/", "/pricing", "/cart"][i % 3], ms: 80 + i * 7 },
+}));
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+function statusRollup(): Doc[] {
+  const g = new Map<string, { n: number; revenue: number }>();
+  for (const o of pgOrders) {
+    const e = g.get(o.status as string) ?? { n: 0, revenue: 0 };
+    e.n += 1;
+    e.revenue += o.total as number;
+    g.set(o.status as string, e);
+  }
+  return [...g.entries()].map(([status, e]) => ({ status, n: e.n, revenue: round2(e.revenue) })).sort((a, b) => b.n - a.n);
+}
+function dailyRevenue(): Doc[] {
+  const g = new Map<string, number>();
+  for (const o of pgOrders) {
+    const day = String(o.created_at).slice(0, 10);
+    g.set(day, (g.get(day) ?? 0) + (o.total as number));
+  }
+  return [...g.entries()].sort().map(([day, revenue]) => ({ day, revenue: round2(revenue) }));
+}
+
+interface PgCol {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  default: string | null;
+  identity: string | null;
+  generated: boolean;
+}
+const col = (name: string, dataType: string, extra: Partial<PgCol> = {}): PgCol => ({
+  name,
+  dataType,
+  nullable: true,
+  default: null,
+  identity: null,
+  generated: false,
+  ...extra,
+});
+
+interface PgTable {
+  kind: "table" | "view" | "matview";
+  rows: () => Doc[];
+  columns: PgCol[];
+  primaryKey: string[];
+  refs: { field: string; to: string }[];
+  comment?: string;
+}
+
+const pgStore: Record<string, Record<string, PgTable>> = {
+  public: {
+    customers: {
+      kind: "table",
+      rows: () => pgCustomers,
+      columns: [
+        col("id", "bigint", { nullable: false, identity: "a" }),
+        col("name", "text", { nullable: false }),
+        col("email", "character varying(320)", { nullable: false }),
+        col("tier", "text", { default: "'free'::text" }),
+        col("active", "boolean", { nullable: false, default: "true" }),
+        col("meta", "jsonb", { default: "'{}'::jsonb" }),
+        col("created_at", "timestamp with time zone", { nullable: false, default: "now()" }),
+      ],
+      primaryKey: ["id"],
+      refs: [],
+      comment: "People who can place orders",
+    },
+    orders: {
+      kind: "table",
+      rows: () => pgOrders,
+      columns: [
+        col("id", "bigint", { nullable: false, identity: "d" }),
+        col("customer_id", "bigint", { nullable: false }),
+        col("status", "text", { nullable: false, default: "'pending'::text" }),
+        col("total", "numeric(12,2)", { nullable: false }),
+        col("currency", "character(3)", { nullable: false, default: "'USD'::bpchar" }),
+        col("shipping", "jsonb"),
+        col("created_at", "timestamp with time zone", { nullable: false, default: "now()" }),
+        col("updated_at", "timestamp with time zone", { nullable: false, default: "now()" }),
+      ],
+      primaryKey: ["id"],
+      refs: [{ field: "customer_id", to: "customers" }],
+    },
+    order_items: {
+      kind: "table",
+      rows: () => pgItems,
+      columns: [
+        col("order_id", "bigint", { nullable: false }),
+        col("line", "integer", { nullable: false }),
+        col("sku", "text", { nullable: false }),
+        col("qty", "integer", { nullable: false, default: "1" }),
+        col("price", "numeric(10,2)", { nullable: false }),
+      ],
+      primaryKey: ["order_id", "line"],
+      refs: [{ field: "order_id", to: "orders" }],
+    },
+    events: {
+      kind: "table",
+      rows: () => pgEvents,
+      columns: [col("at", "timestamp with time zone", { nullable: false }), col("kind", "text"), col("payload", "jsonb")],
+      primaryKey: [],
+      refs: [],
+      comment: "Append-only log (no primary key)",
+    },
+    order_totals: {
+      kind: "view",
+      rows: statusRollup,
+      columns: [col("status", "text"), col("n", "bigint"), col("revenue", "numeric")],
+      primaryKey: [],
+      refs: [],
+    },
+  },
+  analytics: {
+    daily_revenue: {
+      kind: "matview",
+      rows: dailyRevenue,
+      columns: [col("day", "text"), col("revenue", "numeric")],
+      primaryKey: [],
+      refs: [],
+    },
+  },
+};
+
+const pgTable = (args: Record<string, unknown>): PgTable | undefined =>
+  pgStore[args.database as string]?.[args.collection as string];
+
+/** Tiny WHERE evaluator: `col = 'x'`, `col > 10`, `col IN (1, 2)`, `col IS NULL`,
+ *  joined by AND. Anything it doesn't understand matches every row. */
+function pgMatches(row: Doc, where: string): boolean {
+  const w = where.trim();
+  if (!w) return true;
+  const lit = (t: string): unknown => {
+    const v = t.trim();
+    if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'");
+    if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+    if (/^(true|false)$/i.test(v)) return v.toLowerCase() === "true";
+    return undefined;
+  };
+  return w.split(/\s+AND\s+/i).every((part) => {
+    const isNull = part.match(/^\s*"?(\w+)"?\s+IS\s+(NOT\s+)?NULL\s*$/i);
+    if (isNull) return (row[isNull[1]] == null) !== !!isNull[2];
+    const inList = part.match(/^\s*"?(\w+)"?\s+IN\s*\((.*)\)\s*$/i);
+    if (inList) return inList[2].split(",").map(lit).includes(row[inList[1]]);
+    const cmp = part.match(/^\s*"?(\w+)"?\s*(=|<>|!=|>=|<=|>|<)\s*(.+?)\s*$/);
+    if (!cmp) return true;
+    const want = lit(cmp[3]);
+    if (want === undefined) return true;
+    const got = row[cmp[1]] as number;
+    const w2 = want as number;
+    switch (cmp[2]) {
+      case "=":
+        return got === w2;
+      case "<>":
+      case "!=":
+        return got !== w2;
+      case ">":
+        return got > w2;
+      case ">=":
+        return got >= w2;
+      case "<":
+        return got < w2;
+      default:
+        return got <= w2;
+    }
+  });
+}
+
+function pgSelect(t: PgTable, q: { filter?: string; sort?: string; projection?: string }): Doc[] {
+  let rows = t.rows().filter((r) => pgMatches(r, q.filter ?? ""));
+  const sort = (q.sort ?? "").trim().match(/^"?(\w+)"?(\s+(ASC|DESC))?/i);
+  if (sort) {
+    const k = sort[1];
+    const dir = sort[3]?.toUpperCase() === "DESC" ? -1 : 1;
+    rows = [...rows].sort((a, b) => ((a[k] as number) > (b[k] as number) ? dir : (a[k] as number) < (b[k] as number) ? -dir : 0));
+  }
+  const cols = (q.projection ?? "")
+    .split(",")
+    .map((c) => c.trim().replace(/^"|"$/g, ""))
+    .filter((c) => c && c !== "*");
+  if (cols.length) rows = rows.map((r) => Object.fromEntries(cols.filter((c) => c in r).map((c) => [c, r[c]])));
+  return rows;
+}
+
+function pgIndexes(table: string, t: PgTable): Doc[] {
+  if (t.kind === "view") return [];
+  const since = iso(40);
+  const ix = (name: string, keys: Doc, method: string, definition: string, size: number, usageOps: number, extra: Doc = {}) => ({
+    name, keys, unique: false, sparse: false, hidden: false, usageOps, usageSince: since, primary: false, method, definition, size, ...extra,
+  });
+  const out: Doc[] = [];
+  if (t.primaryKey.length) {
+    out.push(
+      ix(`${table}_pkey`, Object.fromEntries(t.primaryKey.map((k) => [k, 1])), "btree",
+        `CREATE UNIQUE INDEX ${table}_pkey ON public.${table} USING btree (${t.primaryKey.join(", ")})`, 16_384, 4210,
+        { unique: true, primary: true })
+    );
+  }
+  if (table === "orders") {
+    out.push(
+      ix("orders_status_created_at_idx", { status: 1, created_at: -1 }, "btree",
+        "CREATE INDEX orders_status_created_at_idx ON public.orders USING btree (status, created_at DESC)", 40_960, 312),
+      ix("orders_shipping_idx", { shipping: "gin" }, "gin", "CREATE INDEX orders_shipping_idx ON public.orders USING gin (shipping)", 24_576, 0)
+    );
+  }
+  if (table === "customers") {
+    out.push(
+      ix("customers_email_key", { email: 1 }, "btree",
+        "CREATE UNIQUE INDEX customers_email_key ON public.customers USING btree (email)", 16_384, 97, { unique: true })
+    );
+  }
+  return out;
+}
+
+const PG_UNHANDLED = Symbol("unhandled");
+const PG_SQL_LOG = "SELECT o.*, c.name FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.status = $1 ORDER BY o.created_at DESC LIMIT 50";
+
+/** Commands answered by the PostgreSQL stand-in; anything else falls through. */
+function pgInvoke(cmd: string, args: Record<string, unknown>): unknown {
+  switch (cmd) {
+    case "list_databases":
+      return Object.keys(pgStore).map((name) => ({ name, sizeOnDisk: name === "public" ? 9_830_400 : 114_688, empty: false }));
+    case "list_collections":
+      return Object.entries(pgStore[args.database as string] ?? {}).map(([name, t]) => ({ name, kind: t.kind }));
+    case "collection_counts":
+      return Object.fromEntries(
+        Object.entries(pgStore[args.database as string] ?? {})
+          .filter(([, t]) => t.kind !== "view")
+          .map(([n, t]) => [n, t.rows().length])
+      );
+    case "table_meta": {
+      const t = pgTable(args);
+      if (!t) throw `table ${String(args.database)}.${String(args.collection)} not found`;
+      return { kind: t.kind, columns: t.columns, primaryKey: t.primaryKey, comment: t.comment ?? null };
+    }
+    case "schema_meta":
+      return Object.fromEntries(
+        Object.entries(pgStore[args.database as string] ?? {}).map(([name, t]) => [
+          name,
+          { kind: t.kind, columns: t.columns, primaryKey: t.primaryKey, comment: t.comment ?? null },
+        ])
+      );
+    case "collection_stats": {
+      const t = pgTable(args);
+      const n = t?.rows().length ?? 0;
+      const ix = t ? pgIndexes(args.collection as string, t) : [];
+      return {
+        count: n,
+        size: n * 180 + 8192,
+        avgObjSize: n ? 180 : null,
+        storageSize: n * 180 + 8192,
+        totalIndexSize: ix.reduce((a, i) => a + (i.size as number), 0),
+        nindexes: ix.length,
+      };
+    }
+    case "count_documents": {
+      const t = pgTable(args);
+      return { count: t ? pgSelect(t, { filter: args.filter as string }).length : 0, exact: true, execMs: 2 };
+    }
+    case "find_documents": {
+      const req = args.req as { database: string; collection: string; filter: string; sort: string; projection: string; limit: number; skip: number };
+      const t = pgStore[req.database]?.[req.collection];
+      const rows = t ? pgSelect(t, req) : [];
+      return { docs: rows.slice(req.skip, req.skip + req.limit), execMs: 9, appliedDefaultLimit: false };
+    }
+    case "collection_fields":
+      return (pgTable(args)?.columns ?? []).map((c) => c.name);
+    case "list_indexes": {
+      const t = pgTable(args);
+      return t ? pgIndexes(args.collection as string, t) : [];
+    }
+    case "explain_query": {
+      const table = String(args.collection);
+      const filter = String(args.filter ?? "");
+      const indexed = table === "orders" && /status/.test(filter);
+      const node: Doc = indexed
+        ? { "Node Type": "Index Scan", "Index Name": "orders_status_created_at_idx", "Relation Name": table, "Startup Cost": 0.28, "Total Cost": 8.45, "Plan Rows": 12, "Actual Rows": 12, "Actual Loops": 1 }
+        : { "Node Type": "Seq Scan", "Relation Name": table, "Startup Cost": 0, "Total Cost": 14.6, "Plan Rows": 60, "Actual Rows": 12, "Actual Loops": 1, "Rows Removed by Filter": 48, ...(filter ? { Filter: `(${filter})` } : {}) };
+      const plan = { "Node Type": "Limit", "Startup Cost": 0, "Total Cost": node["Total Cost"], "Plan Rows": 12, "Actual Rows": 12, "Actual Loops": 1, Plans: [node] };
+      return {
+        indexName: indexed ? "orders_status_created_at_idx" : null,
+        stages: ["Limit", `${String(node["Node Type"])} on ${table}`],
+        isCollectionScan: !indexed,
+        nReturned: 12,
+        totalDocsExamined: indexed ? 12 : 60,
+        totalKeysExamined: null,
+        executionTimeMillis: 1,
+        planningTimeMillis: 0.1,
+        totalCost: node["Total Cost"],
+        raw: { Plan: plan, "Planning Time": 0.1, "Execution Time": 1.2 },
+        ...(indexed ? {} : { suggestedIndex: { status: 1 } }),
+      };
+    }
+    case "analyze_schema": {
+      const t = pgTable(args);
+      if (!t) return { sampled: 0, fields: [] };
+      const rows = t.rows();
+      return {
+        sampled: rows.length,
+        primaryKey: t.primaryKey,
+        kind: t.kind,
+        fields: t.columns.map((c) => {
+          const present = rows.filter((r) => r[c.name] != null).length;
+          const examples = [...new Set(rows.map((r) => r[c.name]).filter((v) => v != null))]
+            .slice(0, 3)
+            .map((v) => (typeof v === "object" ? JSON.stringify(v) : v));
+          return {
+            path: c.name,
+            present,
+            coverage: rows.length ? present / rows.length : 0,
+            types: [{ type: c.dataType, count: present }, ...(present < rows.length ? [{ type: "null", count: rows.length - present }] : [])],
+            examples,
+            dataType: c.dataType,
+            nullable: c.nullable,
+            default: c.default,
+            primaryKey: t.primaryKey.includes(c.name),
+          };
+        }),
+      };
+    }
+    case "insert_document": {
+      const key = pgTable(args)?.primaryKey ?? [];
+      return { insertedId: key.length === 1 ? { [key[0]]: 1061 } : null };
+    }
+    case "replace_document":
+      return { matched: 1, modified: 1 };
+    case "delete_document":
+      return { deleted: 1 };
+    case "duplicate_collection": {
+      const t = pgTable({ database: args.database, collection: args.source });
+      return { documents: t?.rows().length ?? 0, indexes: t ? pgIndexes(String(args.source), t).filter((i) => !i.primary).length : 0 };
+    }
+    case "drop_collection":
+      return null;
+    case "clear_collection":
+      return pgTable(args)?.rows().length ?? 0;
+    case "sql_query":
+    case "run_shell": {
+      const text = String(args.sql ?? args.text ?? "");
+      const code = text.replace(/--[^\n]*/g, "").trim();
+      const lower = code.toLowerCase();
+      if (!/^(select|with|table|values|explain|show)\b/.test(lower)) {
+        const verb = (code.split(/\s+/)[0] || "OK").toUpperCase();
+        const n = ["UPDATE", "DELETE", "INSERT"].includes(verb) ? (verb === "INSERT" ? " 0 3" : " 3") : "";
+        return { kind: "message", message: `${verb}${n}`, execMs: 4, appliedDefaultLimit: false };
+      }
+      let docs: Doc[];
+      if (/group by/.test(lower) && /(day|date_trunc|to_char)/.test(lower)) docs = dailyRevenue();
+      else if (/group by/.test(lower) && /tier/.test(lower)) {
+        const g = new Map<string, number>();
+        for (const o of pgOrders) {
+          const tier = pgCustomers[(o.customer_id as number) - 1].tier as string;
+          g.set(tier, (g.get(tier) ?? 0) + (o.total as number));
+        }
+        docs = [...g.entries()].map(([tier, revenue]) => ({ tier, revenue: round2(revenue) })).sort((a, b) => b.revenue - a.revenue);
+      } else if (/group by/.test(lower)) docs = statusRollup();
+      else if (/(sum|count)\(/.test(lower)) {
+        docs = [{ n: pgOrders.length, revenue: round2(pgOrders.reduce((a, o) => a + (o.total as number), 0)) }];
+      } else {
+        const m = lower.match(/from\s+"?(?:\w+\.)?(\w+)"?/);
+        const t = m ? (pgStore.public[m[1]] ?? pgStore.analytics[m[1]]) : undefined;
+        docs = (t ? t.rows() : pgOrders).slice(0, 100);
+      }
+      return cmd === "sql_query"
+        ? { docs, execMs: 6, appliedDefaultLimit: false }
+        : { kind: "docs", docs, execMs: 6, appliedDefaultLimit: false };
+    }
+    case "db_overview": {
+      const schema = args.database as string;
+      return {
+        database: schema,
+        refsSkipped: 0,
+        collections: Object.entries(pgStore[schema] ?? {}).map(([name, t]) => {
+          const n = name === "events" ? 1_284_220 : t.rows().length;
+          const ix = pgIndexes(name, t);
+          const view = t.kind === "view";
+          return {
+            name,
+            kind: t.kind,
+            count: view ? null : n,
+            size: view ? null : n * 180 + 8192,
+            avgObjSize: view || !n ? null : 180,
+            storageSize: view ? null : n * 180 + 8192,
+            totalIndexSize: view ? null : ix.reduce((a, i) => a + (i.size as number), 0),
+            nindexes: view ? null : ix.length,
+            capped: false,
+            validated: name === "orders",
+            refs: t.refs,
+          };
+        }),
+      };
+    }
+    case "server_info":
+      return {
+        engine: "postgres",
+        server: { version: "PostgreSQL 17.2 on aarch64-unknown-linux-gnu, compiled by gcc 12.2.0, 64-bit", server_version: "17.2", version_num: 170002, started_at: iso(12), uptime_secs: 1_036_800, in_recovery: false, server_addr: "10.0.4.21", server_port: 5432, data_directory: null },
+        session: { database: "shop", user: "app", session_user: "app", superuser: false, create_db: false, create_role: false, replication: false, search_path: '"$user", public', timezone: "UTC", encoding: "UTF8", ssl: true, ssl_version: "TLSv1.3", ssl_cipher: "TLS_AES_256_GCM_SHA384" },
+        database: { name: "shop", size: 9_945_088, connections: 7, xact_commit: 1_482_991, xact_rollback: 312, blks_hit: 88_410_223, blks_read: 120_442, tup_returned: 44_120_883, tup_fetched: 9_882_110, tup_inserted: 120_442, tup_updated: 44_021, tup_deleted: 1_204, conflicts: 0, deadlocks: 0, temp_bytes: 0, stats_reset: iso(40), encoding: "UTF8", collation: "en_US.UTF-8" },
+        settings: [
+          { name: "max_connections", setting: "100", unit: null, short_desc: "Sets the maximum number of concurrent connections." },
+          { name: "shared_buffers", setting: "16384", unit: "8kB", short_desc: "Sets the number of shared memory buffers used by the server." },
+          { name: "shared_preload_libraries", setting: "pg_stat_statements", unit: null, short_desc: "Lists shared libraries to preload into server." },
+          { name: "statement_timeout", setting: "0", unit: "ms", short_desc: "Sets the maximum allowed duration of any statement." },
+          { name: "wal_level", setting: "replica", unit: null, short_desc: "Sets the level of information written to the WAL." },
+          { name: "work_mem", setting: "4096", unit: "kB", short_desc: "Sets the maximum memory to be used for query workspaces." },
+        ],
+        extensions: [
+          { name: "pg_stat_statements", version: "1.11" },
+          { name: "pgcrypto", version: "1.3" },
+          { name: "plpgsql", version: "1.0" },
+          { name: "vector", version: "0.8.0" },
+        ],
+        databases: [
+          { name: "postgres", size: 7_631_663 },
+          { name: "shop", size: 9_945_088 },
+        ],
+        replication: [],
+        connections: [
+          { state: "idle", count: 5 },
+          { state: "active", count: 1 },
+          { state: "autovacuum launcher", count: 1 },
+        ],
+      };
+    case "server_status_light": {
+      const tick = Math.floor(Date.now() / 1000) % 100_000;
+      return {
+        engine: "postgres",
+        uptime: 1_036_800 + tick,
+        version: "17.2",
+        // Mongo-shaped counters (query = rows read, command = transactions), like the backend.
+        opcounters: { insert: 120_442 + tick, query: 9_882_110 + tick * 12, update: 44_021 + tick, delete: 1_204, getmore: 0, command: 1_483_303 + tick * 3 },
+        connections: { current: 7, available: 93, active: 1 },
+        pg: { xactCommit: 1_482_991 + tick * 3, xactRollback: 312, tupReturned: 44_120_883 + tick * 40, tupFetched: 9_882_110 + tick * 12, blksRead: 120_442, blksHit: 88_410_223 + tick * 90, databaseSize: 9_945_088, maxConnections: 100 },
+      };
+    }
+    case "current_ops":
+      return [
+        { opid: 48213, pid: 48213, user: "app", ns: "shop", appName: "api-server", client: "10.0.2.14", op: "active", state: "active", waitingForLock: false, waitEvent: null, command: { query: PG_SQL_LOG }, query: PG_SQL_LOG, desc: "client backend", secs_running: 0, microsecs_running: 184_000, xactSecs: 0.2 },
+        { opid: 48190, pid: 48190, user: "etl", ns: "shop", appName: "nightly-refresh", client: "10.0.2.30", op: "active", state: "active", waitingForLock: true, waitEvent: "Lock: relation", command: { query: "REFRESH MATERIALIZED VIEW analytics.daily_revenue" }, query: "REFRESH MATERIALIZED VIEW analytics.daily_revenue", desc: "client backend", secs_running: 14, microsecs_running: 14_220_000, xactSecs: 14.2 },
+      ];
+    case "kill_op":
+      return null;
+    case "profiler_status":
+    case "set_profiler":
+      return { engine: "postgres", was: 1, installed: true, available: true, preloaded: true };
+    case "profiler_entries":
+      return [
+        { query: PG_SQL_LOG.replace("LIMIT 50", "LIMIT $2"), calls: 18_220, total_exec_time: 9_412.8, mean_exec_time: 0.52, max_exec_time: 41.3, rows: 911_000, shared_blks_hit: 2_410_220, shared_blks_read: 1_204 },
+        { query: "SELECT * FROM events WHERE kind = $1 AND at > $2", calls: 220, total_exec_time: 18_830.1, mean_exec_time: 85.59, max_exec_time: 412.0, rows: 1_840_000, shared_blks_hit: 120_000, shared_blks_read: 88_412 },
+        { query: "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2", calls: 4_120, total_exec_time: 1_204.4, mean_exec_time: 0.29, max_exec_time: 12.8, rows: 4_120, shared_blks_hit: 41_200, shared_blks_read: 88 },
+      ];
+    case "ping_workspace":
+      return 14 + Math.round(Math.random() * 20);
+    default:
+      return PG_UNHANDLED;
+  }
+}
+
+/** Is this call for a PostgreSQL workspace (explicit `workspace` arg, or the active one)? */
+const isPgCall = (args: Record<string, unknown>) => {
+  const ws = (args.workspace as string | undefined) ?? activeWs;
+  return !!ws && pgWorkspaces.has(ws);
+};
+
+/** A connection form / URI input that targets PostgreSQL. */
+const isPgInput = (input: Doc | undefined) =>
+  (input?.fields as Doc | undefined)?.scheme === "postgresql" || /^postgres(ql)?:\/\//.test(String(input?.uri ?? ""));
 
 let seq = 0;
 const listeners = new Map<number, (e: unknown) => void>();
@@ -109,8 +621,55 @@ function mockAggregate(stages: { op: string; body: string }[]): Doc[] {
     .sort((a, b) => b.count - a.count);
 }
 
+/** Canned OpenRouter replies for the PostgreSQL prompts (any system prompt
+ *  mentioning PostgreSQL). Matching is loose on purpose - the prompts evolve. */
+function mockAiPg(system: string, user: string): string {
+  const sys = system.toLowerCase();
+  const ask = user.toLowerCase().split("request:").pop() ?? "";
+  if (/pick which/.test(sys)) return JSON.stringify({ collections: ["orders", "customers"] });
+  if (/suggest analytics/.test(sys)) {
+    return JSON.stringify({ prompts: ["Revenue by customer tier", "Orders per day", "Orders by status", "Top 5 customers by spend"] });
+  }
+  if (/summari[sz]e/.test(sys)) {
+    return "Paid orders make up about two thirds of all orders and most of the revenue. Refunds are rare; pending orders are small in both count and value.";
+  }
+  if (/explain|performance expert/.test(sys)) {
+    return "Unhealthy: a Seq Scan on orders reads every row to return 12.\nThe filter removed 48 of 60 rows and there is no index on status.\nFix: CREATE INDEX orders_status_created_at_idx ON orders (status, created_at DESC);";
+  }
+  if (/expert inside a database gui/.test(sys)) {
+    return JSON.stringify({
+      query: "SELECT id, customer_id, status, total, created_at\nFROM orders\nWHERE status = 'paid'\nORDER BY created_at DESC\nLIMIT 50;",
+      notes: "- Replaced SELECT * with the columns you read\n- Added LIMIT 50 so a large table cannot flood the client\n- An index on (status, created_at DESC) serves both the filter and the sort",
+    });
+  }
+  // Studio: question -> one read-only SELECT.
+  if (/delete|remove|drop|update|insert/.test(ask)) return JSON.stringify({ kind: "sql", sql: "", explanation: "", writeIntent: true });
+  const plan = (sql: string, type: string, labelField: string, valueField: string, title: string, explanation: string) =>
+    JSON.stringify({ kind: "sql", sql, collection: "orders", chart: { type, kind: type, labelField, valueField, title }, title, explanation });
+  if (/day|trend|over time/.test(ask)) {
+    return plan(
+      "SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day, round(sum(total)::numeric, 2) AS revenue FROM orders GROUP BY 1 ORDER BY 1 LIMIT 500",
+      "line", "day", "revenue", "Revenue per day", "Sums order totals per calendar day, oldest first."
+    );
+  }
+  if (/total revenue|how much/.test(ask)) {
+    return plan("SELECT count(*) AS n, round(sum(total)::numeric, 2) AS revenue FROM orders", "number", "", "revenue", "Total revenue (USD)", "Adds up the total of every order.");
+  }
+  if (/tier/.test(ask)) {
+    return plan(
+      "SELECT c.tier, round(sum(o.total)::numeric, 2) AS revenue FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY c.tier ORDER BY revenue DESC LIMIT 500",
+      "bar", "tier", "revenue", "Revenue by customer tier", "Joins orders to customers and sums revenue per tier."
+    );
+  }
+  return plan(
+    "SELECT status, count(*) AS n FROM orders GROUP BY status ORDER BY n DESC",
+    "bar", "status", "n", "Orders by status", "Counts orders in each status, most common first."
+  );
+}
+
 /** Canned OpenRouter replies keyed off the prompt text. */
 function mockAi(system: string, user: string): string {
+  if (system.includes("PostgreSQL")) return mockAiPg(system, user);
   const q = user.toLowerCase();
   if (system.includes("pick which MongoDB collections")) return JSON.stringify({ collections: ["orders", "users"] });
   if (system.includes("suggest analytics questions")) {
@@ -168,6 +727,10 @@ function mockAi(system: string, user: string): string {
 
 async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<unknown> {
   await sleep(cmd.startsWith("plugin:") ? 0 : 60);
+  if (isPgCall(args)) {
+    const out = pgInvoke(cmd, args);
+    if (out !== PG_UNHANDLED) return out;
+  }
   switch (cmd) {
     case "plugin:app|version":
       return "0.1.0";
@@ -186,20 +749,42 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
       return profiles;
     case "save_connection": {
       const input = args.input as Doc;
-      const p = { ...(profiles[0] as Doc), id: `p${Date.now()}`, ...input, hostSummary: (input.fields as Doc)?.host ?? "mongodb+srv://new", hasSecret: !!input.password };
+      const pg = isPgInput(input);
+      const base = profiles.find((x) => x.engine === (pg ? "postgres" : "mongo"))!;
+      const p = { ...(base as Doc), id: `p${Date.now()}`, ...input, engine: pg ? "postgres" : "mongo", hostSummary: (input.fields as Doc)?.host ?? (pg ? "postgresql://new" : "mongodb+srv://new"), hasSecret: !!input.password };
       profiles.push(p as never);
       return p;
     }
     case "test_connection":
-      return { ok: true, serverVersion: "7.0.11", topology: "Replica set · rs0", latencyMs: 24 };
-    case "connect":
-      return info(profiles.find((p) => p.id === args.profileId)!);
-    case "connect_input":
-      return { ...info(profiles[0]), id: `adhoc-${++seq}`, profileId: null, name: (args.input as Doc).name || "Unsaved" };
-    case "switch_workspace":
-      return info(profiles.find((p) => p.id === args.id) ?? profiles[0]);
+      return isPgInput(args.input as Doc)
+        ? { ok: true, serverVersion: "17.2", topology: "PostgreSQL · primary", latencyMs: 31 }
+        : { ok: true, serverVersion: "7.0.11", topology: "Replica set · rs0", latencyMs: 24 };
+    case "connect": {
+      const p = profiles.find((x) => x.id === args.profileId)!;
+      activeWs = p.id;
+      if (p.engine === "postgres") pgWorkspaces.add(p.id);
+      return info(p);
+    }
+    case "connect_input": {
+      const pg = isPgInput(args.input as Doc);
+      const id = `adhoc-${++seq}`;
+      activeWs = id;
+      if (pg) pgWorkspaces.add(id);
+      const base = profiles.find((x) => x.engine === (pg ? "postgres" : "mongo"))!;
+      return { ...info(base), id, profileId: null, name: (args.input as Doc).name || "Unsaved" };
+    }
+    case "switch_workspace": {
+      activeWs = args.id as string;
+      const p = profiles.find((x) => x.id === args.id);
+      if (p) return info(p);
+      const base = profiles.find((x) => x.engine === (pgWorkspaces.has(activeWs!) ? "postgres" : "mongo"))!;
+      return { ...info(base), id: activeWs, profileId: null, name: "Unsaved" };
+    }
     case "disconnect_workspace":
+      if (activeWs === args.id) activeWs = null;
+      return null;
     case "disconnect":
+      activeWs = null;
       return null;
     case "list_databases":
       return Object.keys(store).map((name) => ({ name, sizeOnDisk: name === "api" ? 44_700_000 : 1_200_000, empty: false }));

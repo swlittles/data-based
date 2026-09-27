@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import {
   Clock,
   Code2,
+  Copy,
   EyeOff,
   Hash,
   Key,
@@ -24,9 +25,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { api, errMsg, type CollectionStats, type IndexInfo } from "@/lib/api";
+import { api, errMsg, type CollectionStats, type Doc, type IndexInfo } from "@/lib/api";
 import { toShellText, formatBytes, formatCount } from "@/lib/bson";
+import { sqlIdent, terms } from "@/lib/engine";
 import { cn } from "@/lib/utils";
+import { useEngine } from "@/stores/connections";
 import type { Tab } from "@/stores/explorer";
 
 interface IndexesPaneProps {
@@ -153,6 +156,9 @@ function buildKeysText(keys: KeyField[]): string {
 
 export function IndexesPane({ tab, active, readOnly }: IndexesPaneProps) {
   const open = active;
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
   const [indexes, setIndexes] = useState<IndexInfo[] | null>(null);
   const [stats, setStats] = useState<CollectionStats | null>(null);
   const [creating, setCreating] = useState(false);
@@ -254,10 +260,10 @@ export function IndexesPane({ tab, active, readOnly }: IndexesPaneProps) {
               <div className="statgrid five">
                 {(
                   [
-                    ["Documents", formatCount(stats.count)],
+                    [t.Docs, formatCount(stats.count)],
                     ["Data", formatBytes(stats.size)],
-                    ["Storage", formatBytes(stats.storageSize)],
-                    ["Avg doc", formatBytes(stats.avgObjSize)],
+                    [pg ? "Total" : "Storage", formatBytes(stats.storageSize)],
+                    [`Avg ${t.doc}`, formatBytes(stats.avgObjSize)],
                     ["Index size", formatBytes(stats.totalIndexSize)],
                   ] as const
                 ).map(([label, value]) => (
@@ -281,7 +287,18 @@ export function IndexesPane({ tab, active, readOnly }: IndexesPaneProps) {
               )}
             </div>
 
-            {creating && (
+            {creating && pg && (
+              <PgCreateForm
+                tab={tab}
+                onCreated={async () => {
+                  setCreating(false);
+                  await load();
+                }}
+                onCancel={() => setCreating(false)}
+              />
+            )}
+
+            {creating && !pg && (
               <CreateForm
                 collection={tab.collection}
                 rawMode={rawMode}
@@ -311,7 +328,10 @@ export function IndexesPane({ tab, active, readOnly }: IndexesPaneProps) {
               </div>
             ) : (
               <div className="flex flex-col gap-[7px]">
-                {indexes.map((idx) => (
+                {indexes.map((idx) =>
+                  pg ? (
+                    <PgIndexRow key={idx.name} idx={idx} readOnly={readOnly} onDrop={() => setDropping(idx.name)} />
+                  ) : (
                   <div key={idx.name} className="idxrow group">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-1.5">
@@ -360,7 +380,8 @@ export function IndexesPane({ tab, active, readOnly }: IndexesPaneProps) {
                       </button>
                     )}
                   </div>
-                ))}
+                  )
+                )}
               </div>
             )}
         </div>
@@ -587,18 +608,302 @@ function OptToggle({
   hint,
   checked,
   onChange,
+  disabled,
 }: {
   label: React.ReactNode;
   hint: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
-    <CheckRow on={checked} onChange={onChange} className="items-start">
+    <CheckRow on={checked} onChange={onChange} disabled={disabled} className="items-start">
       <span className="min-w-0 text-left">
         <span className="block text-[12px] font-medium leading-tight text-text">{label}</span>
         <span className="block text-[10.5px] leading-tight text-text-3">{hint}</span>
       </span>
     </CheckRow>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL
+// ---------------------------------------------------------------------------
+
+const PG_METHODS: { value: string; label: string; hint: string }[] = [
+  { value: "btree", label: "B-tree", hint: "Equality, ranges and sorting - the default" },
+  { value: "hash", label: "Hash", hint: "Equality only" },
+  { value: "gin", label: "GIN", hint: "jsonb, arrays and full-text search" },
+  { value: "gist", label: "GiST", hint: "Geometry, ranges, nearest-neighbour" },
+  { value: "spgist", label: "SP-GiST", hint: "Space-partitioned data: points, text prefixes" },
+  { value: "brin", label: "BRIN", hint: "Huge tables stored in natural order (time series)" },
+  { value: "hnsw", label: "HNSW (pgvector)", hint: "Approximate nearest-neighbour vector search" },
+  { value: "ivfflat", label: "IVFFlat (pgvector)", hint: "Vector search; build after the table has data" },
+];
+
+/** A Postgres index's key columns as SQL: `email, created_at DESC`. */
+function pgKeyList(keys: Doc): string {
+  return Object.entries(keys)
+    .map(([col, v]) => (v === -1 ? `${col} DESC` : col))
+    .join(", ");
+}
+
+function PgIndexRow({ idx, readOnly, onDrop }: { idx: IndexInfo; readOnly: boolean; onDrop: () => void }) {
+  // Postgres reports the partial predicate as SQL text, not a filter document.
+  const partial = idx.partialFilter as unknown as string | null | undefined;
+  const unused = idx.usageOps === 0 && !idx.primary && !idx.hidden;
+  const since = idx.usageSince ? new Date(idx.usageSince).toLocaleString() : null;
+  const definition = idx.definition ?? pgKeyList(idx.keys);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(definition);
+      toast.success("Index definition copied");
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  return (
+    <div className="idxrow group">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="n">{idx.name}</span>
+          {idx.primary && (
+            <span className="pill acc">
+              <Key /> primary key
+            </span>
+          )}
+          {idx.unique && !idx.primary && <IdxBadge>unique</IdxBadge>}
+          {idx.method && <IdxBadge>{idx.method}</IdxBadge>}
+          {partial && <IdxBadge>partial</IdxBadge>}
+          {idx.hidden && (
+            <span className="pill dgr" title="The build failed or is still running (CONCURRENTLY); the planner ignores it. Drop and recreate it.">
+              invalid
+            </span>
+          )}
+          {unused && (
+            <span
+              className="pill warn"
+              title={
+                (since ? `No scans have used this index since ${since}` : "No scans have used this index since stats began") +
+                (idx.unique ? " - it still enforces uniqueness" : "")
+              }
+            >
+              unused
+            </span>
+          )}
+        </div>
+        <p className="mt-1 break-all font-mono text-[11px] text-text-3">{definition}</p>
+        <p className="mt-0.5 font-mono text-[10px] tabular-nums text-text-3" title={since ? `Counting since ${since}` : undefined}>
+          {idx.size != null && <>{formatBytes(idx.size)}</>}
+          {idx.size != null && idx.usageOps != null && " · "}
+          {idx.usageOps != null && (
+            <>
+              {idx.usageOps.toLocaleString()} scan{idx.usageOps === 1 ? "" : "s"}
+            </>
+          )}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          className="ico opacity-0 transition-opacity group-hover:opacity-100"
+          onClick={() => void copy()}
+          aria-label={`Copy definition of ${idx.name}`}
+          title="Copy CREATE INDEX statement"
+        >
+          <Copy />
+        </button>
+        {!readOnly && (
+          <button
+            className="ico dgr opacity-0 transition-opacity group-hover:opacity-100"
+            onClick={onDrop}
+            disabled={idx.primary}
+            aria-label={`Drop index ${idx.name}`}
+            title={idx.primary ? "Primary key index - drop the constraint to remove it" : undefined}
+          >
+            <X />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PgCreateForm({
+  tab,
+  onCreated,
+  onCancel,
+}: {
+  tab: Tab;
+  onCreated: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [columns, setColumns] = useState("");
+  const [name, setName] = useState("");
+  const [unique, setUnique] = useState(false);
+  const [method, setMethod] = useState("btree");
+  const [partialEnabled, setPartialEnabled] = useState(false);
+  const [partialText, setPartialText] = useState("status = 'active'");
+  const [concurrently, setConcurrently] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  // Only B-tree indexes can enforce uniqueness.
+  const canUnique = method === "btree";
+  const cols = columns.trim();
+  const canCreate = cols.replace(/[{}()\s]/g, "").length > 0;
+  const where = partialEnabled && partialText.trim() ? partialText.trim() : null;
+  const hint = PG_METHODS.find((m) => m.value === method)?.hint;
+
+  const addColumn = (col: string) =>
+    setColumns((c) => (c.trim() ? `${c.trim().replace(/,$/, "")}, ${sqlIdent(col)}` : sqlIdent(col)));
+
+  const preview = [
+    `CREATE ${unique && canUnique ? "UNIQUE " : ""}INDEX`,
+    concurrently && "CONCURRENTLY",
+    name.trim() && sqlIdent(name.trim()),
+    `ON ${sqlIdent(tab.collection)}`,
+    method !== "btree" && `USING ${method}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const handleCreate = async () => {
+    setBusy(true);
+    try {
+      const created = await api.createIndex({
+        database: tab.database,
+        collection: tab.collection,
+        keysText: cols,
+        name: name.trim() || undefined,
+        unique: unique && canUnique,
+        method,
+        partialFilterText: where ?? undefined,
+        concurrently: concurrently || undefined,
+      });
+      toast.success(`Created index "${created}"`);
+      await onCreated();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="stack rounded-[var(--r)] border border-line bg-panel p-4">
+      <div className="fld">
+        <label htmlFor="pg-idx-cols">Index columns</label>
+        <input
+          id="pg-idx-cols"
+          className="in"
+          value={columns}
+          onChange={(e) => setColumns(e.target.value)}
+          placeholder="email, created_at DESC  or  lower(email)"
+          spellCheck={false}
+          autoFocus
+        />
+        {(tab.meta?.columns.length ?? 0) > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {tab.meta!.columns.map((c) => (
+              <button
+                key={c.name}
+                type="button"
+                className="pill transition-colors hover:border-accent-line hover:text-text"
+                title={`${c.dataType} - add to the column list`}
+                onClick={() => addColumn(c.name)}
+              >
+                <Plus />
+                {c.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="fld">
+          <label htmlFor="pg-idx-name">Name (optional)</label>
+          <input
+            id="pg-idx-name"
+            className="in"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="auto-generated"
+            spellCheck={false}
+          />
+        </div>
+        <div className="fld">
+          <label>Method</label>
+          <Select value={method} onValueChange={setMethod}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PG_METHODS.map((m) => (
+                <SelectItem key={m.value} value={m.value}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {hint && <span className="text-[10.5px] text-text-3">{hint}</span>}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <OptToggle
+          label="Unique"
+          hint={canUnique ? "Reject duplicate values" : "Only B-tree indexes can be unique"}
+          checked={unique && canUnique}
+          disabled={!canUnique}
+          onChange={setUnique}
+        />
+        <OptToggle
+          label="Build concurrently (no write lock)"
+          hint="Slower, but writes to the table continue"
+          checked={concurrently}
+          onChange={setConcurrently}
+        />
+      </div>
+
+      <div className="rounded-[var(--r-sm)] border border-line bg-bg p-2.5">
+        <OptToggle
+          label="Partial index"
+          hint="Only index rows matching a WHERE condition"
+          checked={partialEnabled}
+          onChange={setPartialEnabled}
+        />
+        {partialEnabled && (
+          <input
+            className="in mt-2"
+            value={partialText}
+            onChange={(e) => setPartialText(e.target.value)}
+            placeholder="status = 'active'"
+            spellCheck={false}
+          />
+        )}
+      </div>
+
+      <div className="fld">
+        <label>Preview</label>
+        <div className="notice mono">
+          <code className="block break-all">
+            {preview} (<span className={cn(!canCreate && "text-danger")}>{cols || "…"}</span>)
+            {where && <> WHERE {where}</>}
+          </code>
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button size="sm" onClick={() => void handleCreate()} disabled={busy || !canCreate}>
+          {busy && <Loader2 className="spin" />}
+          Create index
+        </Button>
+      </div>
+    </div>
   );
 }

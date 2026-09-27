@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { api, errMsg, type CollectionOverview, type DbOverview } from "@/lib/api";
 import { formatBytes, formatCount } from "@/lib/bson";
+import { terms } from "@/lib/engine";
+import { useEngine } from "@/stores/connections";
 import { cn } from "@/lib/utils";
 
 /**
@@ -25,6 +27,9 @@ import { cn } from "@/lib/utils";
  * footprint, plus the references inferred from sampled ObjectId fields.
  * Flags the things worth acting on (big collections with only the _id index,
  * empty collections, indexes larger than the data) and exports as CSV / JSON.
+ *
+ * For Postgres the same shape describes a schema: tables / views, planner row
+ * estimates, heap vs total (indexes + TOAST) size, and real foreign keys.
  */
 
 interface DbOverviewDialogProps {
@@ -40,9 +45,17 @@ type Focus = "all" | "unindexed" | "empty" | "heavyIndexes";
 /** Big enough that a collection scan hurts. */
 const UNINDEXED_MIN_DOCS = 1000;
 
+/** Postgres kinds widen the Mongo union; compare as plain strings. */
+const kindOf = (c: CollectionOverview): string => c.kind;
+/** Views hold no data of their own (matviews do). */
+const isView = (c: CollectionOverview) => kindOf(c) === "view";
+/** Mongo collections with only `_id`; Postgres tables with no index at all. */
 const isUnindexed = (c: CollectionOverview) =>
-  c.kind === "collection" && (c.nindexes ?? 0) <= 1 && (c.count ?? 0) >= UNINDEXED_MIN_DOCS;
-const isEmpty = (c: CollectionOverview) => c.kind !== "view" && c.count === 0;
+  (kindOf(c) === "collection"
+    ? (c.nindexes ?? 0) <= 1
+    : ["table", "partitioned", "matview"].includes(kindOf(c)) && (c.nindexes ?? 0) === 0) &&
+  (c.count ?? 0) >= UNINDEXED_MIN_DOCS;
+const isEmpty = (c: CollectionOverview) => !isView(c) && c.count === 0;
 const hasHeavyIndexes = (c: CollectionOverview) =>
   (c.size ?? 0) > 0 && (c.totalIndexSize ?? 0) > (c.size ?? 0);
 
@@ -56,12 +69,33 @@ const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: "totalIndexSize", label: "Index size", numeric: true },
 ];
 
-function toCsv(rows: CollectionOverview[]): string {
+const PG_COLUMNS: typeof COLUMNS = [
+  { key: "name", label: "Table" },
+  { key: "count", label: "Rows (est.)", numeric: true },
+  { key: "avgObjSize", label: "Avg row", numeric: true },
+  { key: "size", label: "Table", numeric: true },
+  { key: "storageSize", label: "Total", numeric: true },
+  { key: "nindexes", label: "Indexes", numeric: true },
+  { key: "totalIndexSize", label: "Index size", numeric: true },
+];
+
+/** Short badge for a non-default kind. */
+const KIND_BADGE: Record<string, string> = {
+  timeseries: "ts",
+  view: "view",
+  matview: "mat. view",
+  partitioned: "partitioned",
+  foreign: "foreign",
+};
+
+function toCsv(rows: CollectionOverview[], pg: boolean): string {
   const esc = (v: unknown) => {
     const s = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const head = ["collection", "kind", "documents", "avgDocBytes", "dataBytes", "storageBytes", "indexes", "indexBytes", "capped", "validated", "references"];
+  const head = pg
+    ? ["table", "kind", "rowsEstimate", "avgRowBytes", "tableBytes", "totalBytes", "indexes", "indexBytes", "partitioned", "checkConstraints", "foreignKeys"]
+    : ["collection", "kind", "documents", "avgDocBytes", "dataBytes", "storageBytes", "indexes", "indexBytes", "capped", "validated", "references"];
   const lines = rows.map((c) =>
     [
       c.name,
@@ -72,7 +106,7 @@ function toCsv(rows: CollectionOverview[]): string {
       c.storageSize,
       c.nindexes,
       c.totalIndexSize,
-      c.capped,
+      pg ? kindOf(c) === "partitioned" : c.capped,
       c.validated,
       c.refs.map((r) => `${r.field}->${r.to}`).join("; "),
     ]
@@ -83,6 +117,9 @@ function toCsv(rows: CollectionOverview[]): string {
 }
 
 export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollection }: DbOverviewDialogProps) {
+  const pg = useEngine() === "postgres";
+  const t = terms(pg ? "postgres" : "mongo");
+  const columns = pg ? PG_COLUMNS : COLUMNS;
   const [data, setData] = useState<DbOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -156,11 +193,17 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
     if (!path) return;
     const content =
       format === "csv"
-        ? toCsv(rows)
-        : JSON.stringify({ database, exportedAt: new Date().toISOString(), collections: rows }, null, 2);
+        ? toCsv(rows, pg)
+        : JSON.stringify(
+            pg
+              ? { schema: database, exportedAt: new Date().toISOString(), tables: rows }
+              : { database, exportedAt: new Date().toISOString(), collections: rows },
+            null,
+            2
+          );
     try {
       await api.saveTextFile(path, content);
-      toast.success(`Exported ${rows.length} collection${rows.length === 1 ? "" : "s"}`);
+      toast.success(`Exported ${rows.length} ${rows.length === 1 ? t.coll : t.colls}`);
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -175,7 +218,7 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
         type="button"
         className={cn("pill", tone, focus === id && "ring-1 ring-current")}
         onClick={() => setFocus((f) => (f === id ? "all" : id))}
-        title={focus === id ? "Show all collections" : "Show only these"}
+        title={focus === id ? `Show all ${t.colls}` : "Show only these"}
       >
         {n} {label}
       </button>
@@ -185,9 +228,11 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[980px]">
         <DialogHeader>
-          <DialogTitle>Database overview</DialogTitle>
+          <DialogTitle>{t.Db} overview</DialogTitle>
           <DialogDescription>
-            {database} · storage, indexes and references per collection · click a row to open it
+            {pg
+              ? `${database} · size, indexes and foreign keys per table · click a row to open it`
+              : `${database} · storage, indexes and references per collection · click a row to open it`}
           </DialogDescription>
         </DialogHeader>
 
@@ -197,16 +242,16 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
           ) : !data ? (
             <div className="flex h-[360px] items-center justify-center gap-2 text-[12.5px] text-text-3">
               <Loader2 className="spin h-4 w-4 text-text-3" />
-              Reading collection stats...
+              Reading {t.coll} stats...
             </div>
           ) : (
             <>
               <div className="statgrid five">
                 {[
-                  ["Collections", formatCount(colls.length)],
-                  ["Documents", formatCount(totals.count)],
-                  ["Data", formatBytes(totals.size)],
-                  ["Storage", formatBytes(totals.storage)],
+                  [pg ? "Tables" : "Collections", formatCount(colls.length)],
+                  [pg ? "Rows (est.)" : "Documents", formatCount(totals.count)],
+                  [pg ? "Table data" : "Data", formatBytes(totals.size)],
+                  [pg ? "Total size" : "Storage", formatBytes(totals.storage)],
                   ["Indexes", formatBytes(totals.index)],
                 ].map(([l, v]) => (
                   <div key={l}>
@@ -221,12 +266,19 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                   <Search className="h-3.5 w-3.5 shrink-0 text-text-3" />
                   <input
                     className="h-full min-w-0 flex-1 bg-transparent outline-none placeholder:text-text-3"
-                    placeholder="Filter collections"
+                    placeholder={`Filter ${t.colls}`}
                     value={filter}
                     onChange={(e) => setFilter(e.target.value)}
                   />
                 </div>
-                {chip("unindexed", insights.unindexed, `with only the _id index (${formatCount(UNINDEXED_MIN_DOCS)}+ docs)`, "warn")}
+                {chip(
+                  "unindexed",
+                  insights.unindexed,
+                  pg
+                    ? `with no index (${formatCount(UNINDEXED_MIN_DOCS)}+ rows)`
+                    : `with only the _id index (${formatCount(UNINDEXED_MIN_DOCS)}+ docs)`,
+                  "warn"
+                )}
                 {chip("heavyIndexes", insights.heavyIndexes, "with indexes larger than data", "warn")}
                 {chip("empty", insights.empty, "empty", "")}
                 <div className="ml-auto flex shrink-0 gap-2">
@@ -253,7 +305,7 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                 <table className="tbl">
                   <thead>
                     <tr>
-                      {COLUMNS.map((c) => (
+                      {columns.map((c) => (
                         <th
                           key={c.key}
                           onClick={() => toggleSort(c.key)}
@@ -266,7 +318,7 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                           </span>
                         </th>
                       ))}
-                      <th>References</th>
+                      <th>{pg ? "Foreign keys" : "References"}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -275,13 +327,24 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                         <td className="text-text">
                           <span className="inline-flex items-center gap-1.5">
                             {c.name}
-                            {c.kind !== "collection" && <span className="pill">{c.kind === "timeseries" ? "ts" : c.kind}</span>}
+                            {kindOf(c) !== "collection" && kindOf(c) !== "table" && (
+                              <span className="pill">{KIND_BADGE[kindOf(c)] ?? kindOf(c)}</span>
+                            )}
                             {c.capped && <span className="pill">capped</span>}
-                            {c.validated && <span className="pill ok">validated</span>}
-                            {isUnindexed(c) && <span className="pill warn">_id only</span>}
+                            {c.validated &&
+                              (pg ? (
+                                <span className="pill ok" title="Has CHECK constraints">
+                                  checks
+                                </span>
+                              ) : (
+                                <span className="pill ok">validated</span>
+                              ))}
+                            {isUnindexed(c) && <span className="pill warn">{pg ? "no index" : "_id only"}</span>}
                           </span>
                         </td>
-                        <td className="text-right tabular-nums">{c.count == null ? "-" : formatCount(c.count)}</td>
+                        <td className="text-right tabular-nums" title={pg && isView(c) ? "Views store no rows" : undefined}>
+                          {c.count == null ? "-" : formatCount(c.count)}
+                        </td>
                         <td className="text-right tabular-nums">{c.avgObjSize == null ? "-" : formatBytes(c.avgObjSize)}</td>
                         <td className="text-right tabular-nums">{c.size == null ? "-" : formatBytes(c.size)}</td>
                         <td className="text-right tabular-nums">{c.storageSize == null ? "-" : formatBytes(c.storageSize)}</td>
@@ -291,28 +354,44 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                         </td>
                         <td>
                           <span className="inline-flex flex-wrap gap-1">
-                            {c.refs.map((r) => (
-                              <button
-                                key={r.field}
-                                type="button"
-                                className="pill hover:text-text"
-                                title={`${c.name}.${r.field} looks like a reference to ${r.to} - open ${r.to}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  onOpenCollection(r.to);
-                                }}
-                              >
-                                {r.field} → {r.to}
-                              </button>
-                            ))}
+                            {c.refs.map((r) =>
+                              // A schema-qualified target lives in another schema; this dialog
+                              // can only open tables in its own.
+                              pg && r.to.includes(".") ? (
+                                <span
+                                  key={`${r.field}->${r.to}`}
+                                  className="pill"
+                                  title={`${c.name} (${r.field}) references ${r.to}, in another schema`}
+                                >
+                                  {r.field} → {r.to}
+                                </span>
+                              ) : (
+                                <button
+                                  key={`${r.field}->${r.to}`}
+                                  type="button"
+                                  className="pill hover:text-text"
+                                  title={
+                                    pg
+                                      ? `Foreign key ${c.name} (${r.field}) references ${r.to} - open ${r.to}`
+                                      : `${c.name}.${r.field} looks like a reference to ${r.to} - open ${r.to}`
+                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenCollection(r.to);
+                                  }}
+                                >
+                                  {r.field} → {r.to}
+                                </button>
+                              )
+                            )}
                           </span>
                         </td>
                       </tr>
                     ))}
                     {rows.length === 0 && (
                       <tr>
-                        <td colSpan={COLUMNS.length + 1} className="py-8 text-center text-text-3">
-                          {colls.length === 0 ? "No collections in this database." : "No matches."}
+                        <td colSpan={columns.length + 1} className="py-8 text-center text-text-3">
+                          {colls.length === 0 ? `No ${t.colls} in this ${t.db}.` : "No matches."}
                         </td>
                       </tr>
                     )}
@@ -320,11 +399,19 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                 </table>
               </div>
 
-              <div className="font-mono text-[11px] text-text-3">
-                {formatCount(totals.refs)} inferred reference{totals.refs === 1 ? "" : "s"} (ObjectId fields named after
-                another collection, from a 25-document sample)
-                {data.refsSkipped > 0 && ` · references not sampled for the last ${data.refsSkipped} collections`}
-              </div>
+              {pg ? (
+                <div className="font-mono text-[11px] text-text-3">
+                  {formatCount(totals.refs)} foreign key{totals.refs === 1 ? "" : "s"} · row counts are planner
+                  estimates (run ANALYZE to refresh) · views store no rows · "checks" marks tables with CHECK
+                  constraints
+                </div>
+              ) : (
+                <div className="font-mono text-[11px] text-text-3">
+                  {formatCount(totals.refs)} inferred reference{totals.refs === 1 ? "" : "s"} (ObjectId fields named after
+                  another collection, from a 25-document sample)
+                  {data.refsSkipped > 0 && ` · references not sampled for the last ${data.refsSkipped} collections`}
+                </div>
+              )}
             </>
           )}
         </DialogBody>

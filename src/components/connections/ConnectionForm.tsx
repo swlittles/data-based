@@ -8,9 +8,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   api,
   emptyFields,
+  emptyPgFields,
   emptySsh,
   errMsg,
   type AccessMode,
+  type Engine,
   type ProfileInput,
   type ProfileSummary,
   type SshAuth,
@@ -57,6 +59,26 @@ function SecretInput({ id, value, onChange, placeholder }: { id?: string; value:
   );
 }
 
+const ENGINES: { id: Engine; label: string }[] = [
+  { id: "mongo", label: "MongoDB" },
+  { id: "postgres", label: "PostgreSQL" },
+];
+
+const SSL_MODES: { id: string; label: string }[] = [
+  { id: "disable", label: "disable - no TLS" },
+  { id: "prefer", label: "prefer - TLS when offered (default)" },
+  { id: "require", label: "require - TLS, certificate not checked" },
+  { id: "verify-ca", label: "verify-ca - TLS, trusted CA" },
+  { id: "verify-full", label: "verify-full - TLS, trusted CA + host name" },
+];
+
+const engineOfUri = (uri: string): Engine | null => {
+  const t = uri.trim().toLowerCase();
+  if (t.startsWith("postgres://") || t.startsWith("postgresql://")) return "postgres";
+  if (t.startsWith("mongodb://") || t.startsWith("mongodb+srv://")) return "mongo";
+  return null;
+};
+
 const ACCESS: { id: AccessMode; label: string; hint: string; danger?: boolean }[] = [
   { id: "readwrite", label: "Read & write", hint: "full access, confirmations on destructive writes" },
   { id: "readonly", label: "Read-only", hint: "opens read-only, switch to edit mode from the status bar" },
@@ -86,10 +108,25 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
   const [name, setName] = useState(editing?.name ?? "");
   const [color, setColor] = useState(editing?.color ?? PROFILE_COLORS[0]);
   const [access, setAccess] = useState<AccessMode>(editing?.access ?? "readwrite");
+  const [engine, setEngine] = useState<Engine>(editing?.engine ?? "mongo");
   const [kind, setKind] = useState<"fields" | "uri">(editing?.kind ?? "uri");
   const [uri, setUri] = useState("");
   const [password, setPassword] = useState("");
-  const [fields, setFields] = useState(() => ({ ...emptyFields(), ...(editing?.fields ?? {}) }));
+  const [fields, setFields] = useState(() => ({
+    ...(editing?.engine === "postgres" ? emptyPgFields() : emptyFields()),
+    ...(editing?.fields ?? {}),
+  }));
+  const pg = engine === "postgres";
+  const switchEngine = (next: Engine) => {
+    if (next === engine) return;
+    setEngine(next);
+    setTestResult(null);
+    // Keep what carries over (host, user); reset engine-specific defaults.
+    setFields((prev) => {
+      const base = next === "postgres" ? emptyPgFields() : emptyFields();
+      return { ...base, host: prev.host || base.host, username: prev.username ?? base.username };
+    });
+  };
   const [advanced, setAdvanced] = useState(false);
   const [ssh, setSsh] = useState(() => ({ ...emptySsh(), ...(editing?.ssh ?? {}) }));
   const [sshSecret, setSshSecret] = useState("");
@@ -125,6 +162,7 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
       const m = uri.match(/@([^/?,:]+)/) ?? uri.match(/\/\/([^/?,:]+)/);
       return m?.[1] ?? "New connection";
     }
+    if (pg) return `${fields.host || "localhost"}${fields.defaultDatabase ? `/${fields.defaultDatabase}` : ""}`;
     return `${fields.host || "localhost"}${srv ? "" : `:${fields.port ?? 27017}`}`;
   };
 
@@ -143,6 +181,10 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
 
   const validate = (): string | null => {
     if (kind === "uri" && !uri.trim() && !editing?.hasSecret) return "Paste a connection string first";
+    if (kind === "uri" && uri.trim()) {
+      const detected = engineOfUri(uri);
+      if (!detected) return pg ? "The connection string should start with postgresql://" : "The connection string should start with mongodb:// or mongodb+srv://";
+    }
     if (kind === "fields" && !fields.host.trim()) return "Host is required";
     if (ssh.enabled) {
       if (!ssh.host.trim()) return "SSH host is required";
@@ -200,6 +242,20 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
   return (
     <>
       <div className="mbd">
+        <div className="seg self-start no-select" role="radiogroup" aria-label="Database engine">
+          {ENGINES.map((e) => (
+            <button
+              key={e.id}
+              role="radio"
+              aria-checked={engine === e.id}
+              className={cn(engine === e.id && "on")}
+              disabled={!!editing && editing.engine !== e.id && editing.hasSecret && kind === "uri"}
+              onClick={() => switchEngine(e.id)}
+            >
+              {e.label}
+            </button>
+          ))}
+        </div>
         <div className="seg self-start no-select">
           <button className={cn(kind === "uri" && "on")} onClick={() => { setKind("uri"); setTestResult(null); }}>
             Connection string
@@ -216,20 +272,105 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
             hint={
               editing?.kind === "uri" && editing.hasSecret
                 ? `Saved: ${editing.hostSummary} (password hidden). Leave blank to keep it, or paste a new one to replace it.`
-                : "Stored fully encrypted, credentials included. Mongo Bongo parses mongodb:// and mongodb+srv:// URIs."
+                : pg
+                  ? "Stored fully encrypted, credentials included. Works with any hosted Postgres - Neon, Supabase, Tiger Cloud, RDS, PlanetScale - sslmode and sslrootcert are honoured."
+                  : "Stored fully encrypted, credentials included. Mongo Bongo parses mongodb:// and mongodb+srv:// URIs."
             }
           >
             <input
               id="conn-uri"
               className="in"
-              placeholder={editing?.hasSecret ? "(stored - paste a new one to replace)" : "mongodb+srv://user:pass@cluster0.mongodb.net/?retryWrites=true"}
+              placeholder={
+                editing?.hasSecret
+                  ? "(stored - paste a new one to replace)"
+                  : pg
+                    ? "postgresql://user:pass@ep-cool-name.us-east-2.aws.neon.tech/neondb?sslmode=require"
+                    : "mongodb+srv://user:pass@cluster0.mongodb.net/?retryWrites=true"
+              }
               value={uri}
-              onChange={(e) => { setUri(e.target.value); setTestResult(null); }}
+              onChange={(e) => {
+                setUri(e.target.value);
+                setTestResult(null);
+                // Pasting a URI of the other engine switches the form over.
+                const detected = engineOfUri(e.target.value);
+                if (detected && detected !== engine) switchEngine(detected);
+              }}
               spellCheck={false}
               autoComplete="off"
               autoFocus
             />
           </Field>
+        ) : pg ? (
+          <>
+            <div className="two" style={{ gridTemplateColumns: "1fr 110px" }}>
+              <Field label="Host" htmlFor="conn-host">
+                <input id="conn-host" className="in" placeholder="localhost" value={fields.host} onChange={(e) => f("host", e.target.value)} autoFocus />
+              </Field>
+              <Field label="Port" htmlFor="conn-port">
+                <input id="conn-port" className="in" inputMode="numeric" placeholder="5432" value={fields.port ?? ""} onChange={(e) => f("port", e.target.value ? parseInt(e.target.value, 10) || null : null)} />
+              </Field>
+            </div>
+            <div className="two">
+              <Field label="Username" htmlFor="conn-user">
+                <input id="conn-user" className="in" placeholder="postgres" value={fields.username ?? ""} onChange={(e) => f("username", e.target.value || null)} autoCapitalize="off" autoCorrect="off" />
+              </Field>
+              <Field label="Password" htmlFor="conn-pass">
+                <SecretInput
+                  id="conn-pass"
+                  placeholder={editing?.hasSecret ? "(unchanged)" : "(none)"}
+                  value={password}
+                  onChange={(v) => { setPassword(v); setTestResult(null); }}
+                />
+              </Field>
+            </div>
+            <div className="two">
+              <Field label="Database" htmlFor="conn-db" hint="Postgres connections are per database; its schemas show in the picker.">
+                <input id="conn-db" className="in" placeholder="postgres" value={fields.defaultDatabase ?? ""} onChange={(e) => f("defaultDatabase", e.target.value || null)} autoCapitalize="off" autoCorrect="off" />
+              </Field>
+              <Field label="SSL mode">
+                <Select value={fields.sslMode ?? "prefer"} onValueChange={(v) => f("sslMode", v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {SSL_MODES.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>{m.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+
+            <button type="button" onClick={() => setAdvanced((a) => !a)} className="hstack self-start text-[12px] font-medium text-text-2 hover:text-text">
+              {advanced ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              Advanced options
+            </button>
+
+            {advanced && (
+              <div className="stack rounded-[var(--r)] border border-line bg-panel p-4">
+                <Field label="Root certificate (sslrootcert)" hint={'PEM file of the CA to trust for verify-ca / verify-full. "system" uses the OS store; blank uses the OS store plus the Mozilla bundle.'}>
+                  <input className="in" placeholder="/path/to/root.crt" value={fields.tlsCaFile ?? ""} onChange={(e) => f("tlsCaFile", e.target.value || null)} />
+                </Field>
+                <div className="two">
+                  <Field label="Client certificate (sslcert)">
+                    <input className="in" placeholder="/path/to/client.crt" value={fields.tlsCertKeyFile ?? ""} onChange={(e) => f("tlsCertKeyFile", e.target.value || null)} />
+                  </Field>
+                  <Field label="Client key (sslkey)">
+                    <input className="in" placeholder="/path/to/client.key" value={fields.tlsKeyFile ?? ""} onChange={(e) => f("tlsKeyFile", e.target.value || null)} />
+                  </Field>
+                </div>
+                <div className="two">
+                  <Field label="Additional hosts" hint="Tried in order (failover), like libpq.">
+                    <input className="in" placeholder="replica2:5432" value={fields.extraHosts.join(", ")} onChange={(e) => f("extraHosts", e.target.value.split(",").map((h) => h.trim()).filter(Boolean))} />
+                  </Field>
+                  <Field label="Connect timeout (ms)">
+                    <input className="in" inputMode="numeric" placeholder="10000" value={fields.connectTimeoutMs ?? ""} onChange={(e) => f("connectTimeoutMs", e.target.value ? parseInt(e.target.value, 10) || null : null)} />
+                  </Field>
+                </div>
+                <Field label="Extra parameters" hint="URI query parameters, e.g. schema=app (opens that schema first), target_session_attrs=read-write, options=-c statement_timeout=0.">
+                  <input className="in" placeholder="schema=app&application_name=reports" value={fields.extraOptions ?? ""} onChange={(e) => f("extraOptions", e.target.value || null)} />
+                </Field>
+              </div>
+            )}
+          </>
         ) : (
           <>
             <div className="two" style={{ gridTemplateColumns: srv ? "1fr" : "1fr 110px" }}>
@@ -410,8 +551,10 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
               )}
               <span className="hint">
                 {ssh.auth === "agent" && "Uses the keys loaded in your running ssh-agent. "}
-                Mongo Bongo forwards a local port through the bastion to the MongoDB host above and connects to it directly
-                (for a replica set, point it at the member you want). Host keys are checked against ~/.ssh/known_hosts.
+                {pg
+                  ? "Mongo Bongo forwards a local port through the bastion to the PostgreSQL host above; TLS still checks the real host name. "
+                  : "Mongo Bongo forwards a local port through the bastion to the MongoDB host above and connects to it directly (for a replica set, point it at the member you want). "}
+                Host keys are checked against ~/.ssh/known_hosts.
               </span>
             </>
           )}
@@ -473,7 +616,7 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
             testResult.ok ? (
               <span className="hint hstack text-ok">
                 <CheckCircle2 className="h-3.5 w-3.5" />
-                Reachable · {testResult.latencyMs} ms · {testResult.topology} · MongoDB {testResult.serverVersion}
+                Reachable · {testResult.latencyMs} ms · {testResult.topology} · {pg ? "" : "MongoDB "}{testResult.serverVersion}
               </span>
             ) : (
               <span className="hint hstack items-start text-danger">

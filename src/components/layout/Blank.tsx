@@ -54,7 +54,9 @@ export function Blank({
   const server =
     serverLine ??
     (active
-      ? `MongoDB ${active.serverVersion} · ${active.topology} · ${active.hostSummary.split(",")[0]}`
+      ? active.engine === "postgres"
+        ? `${active.topology} ${active.serverVersion} · ${active.hostSummary.split(",")[0]}`
+        : `MongoDB ${active.serverVersion} · ${active.topology} · ${active.hostSummary.split(",")[0]}`
       : "No server session");
 
   return (

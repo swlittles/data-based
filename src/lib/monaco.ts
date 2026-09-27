@@ -238,7 +238,165 @@ export function ensureMonaco(): void {
     comments: { lineComment: "//", blockComment: ["/*", "*/"] },
   });
 
+  registerPgsql();
   applyMonacoTheme();
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL - a `pgsql` language for the SQL shell and the query boxes of
+// Postgres workspaces. Completions reuse the same live registry: table names
+// (collections) and column names (fields).
+// ---------------------------------------------------------------------------
+
+const SQL_KEYWORDS = [
+  "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL", "LIKE", "ILIKE",
+  "BETWEEN", "EXISTS", "ORDER BY", "GROUP BY", "HAVING", "LIMIT", "OFFSET", "ASC", "DESC",
+  "NULLS FIRST", "NULLS LAST", "DISTINCT", "AS", "JOIN", "LEFT JOIN", "RIGHT JOIN",
+  "INNER JOIN", "FULL JOIN", "CROSS JOIN", "LATERAL", "ON", "USING", "UNION", "UNION ALL",
+  "INTERSECT", "EXCEPT", "WITH", "RECURSIVE", "CASE", "WHEN", "THEN", "ELSE", "END",
+  "INSERT INTO", "VALUES", "RETURNING", "UPDATE", "SET", "DELETE FROM", "ON CONFLICT",
+  "DO NOTHING", "DO UPDATE", "CREATE TABLE", "CREATE INDEX", "CREATE VIEW", "ALTER TABLE",
+  "ADD COLUMN", "DROP COLUMN", "DROP TABLE", "TRUNCATE", "EXPLAIN", "ANALYZE", "BEGIN",
+  "COMMIT", "ROLLBACK", "TRUE", "FALSE", "FILTER", "OVER", "PARTITION BY", "WINDOW",
+  "FETCH FIRST", "ROWS ONLY", "SHOW", "VACUUM", "GRANT", "REVOKE",
+];
+
+const SQL_FUNCTIONS = [
+  "count", "sum", "avg", "min", "max", "coalesce", "nullif", "greatest", "least",
+  "now", "current_date", "current_timestamp", "date_trunc", "extract", "age",
+  "to_char", "to_date", "to_timestamp", "interval", "lower", "upper", "length",
+  "trim", "substring", "concat", "replace", "split_part", "string_agg", "array_agg",
+  "json_agg", "jsonb_agg", "json_build_object", "jsonb_build_object", "jsonb_path_query",
+  "jsonb_array_elements", "jsonb_each", "unnest", "generate_series", "row_number",
+  "rank", "dense_rank", "lag", "lead", "percentile_cont", "round", "floor", "ceil",
+  "abs", "random", "gen_random_uuid", "cast", "pg_size_pretty", "pg_total_relation_size",
+];
+
+const SQL_TYPES = [
+  "integer", "bigint", "smallint", "numeric", "real", "double precision", "text",
+  "varchar", "char", "boolean", "date", "time", "timestamp", "timestamptz", "interval",
+  "uuid", "json", "jsonb", "bytea", "inet", "serial", "bigserial",
+];
+
+function registerPgsql(): void {
+  monaco.languages.register({ id: "pgsql" });
+  const g = globalThis as { __mongoBongoSqlCompletion?: { dispose(): void } };
+  g.__mongoBongoSqlCompletion?.dispose();
+  g.__mongoBongoSqlCompletion = monaco.languages.registerCompletionItemProvider("pgsql", {
+    triggerCharacters: ["."],
+    provideCompletionItems(model, position) {
+      const word = model.getWordUntilPosition(position);
+      const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+      const tail = model
+        .getValueInRange(new monaco.Range(1, 1, position.lineNumber, position.column))
+        .slice(-400);
+      const kind = monaco.languages.CompletionItemKind;
+      const items: monaco.languages.CompletionItem[] = [];
+      let group = 0;
+      const push = (labels: string[], itemKind: monaco.languages.CompletionItemKind, detail: string, fn = false) => {
+        group += 1;
+        const seen = new Set<string>();
+        labels.forEach((label, i) => {
+          if (seen.has(label)) return;
+          seen.add(label);
+          items.push({
+            label,
+            kind: itemKind,
+            detail,
+            sortText: `${group}-${String(i).padStart(4, "0")}`,
+            insertText: fn ? `${label}($0)` : label,
+            insertTextRules: fn ? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet : undefined,
+            range,
+          });
+        });
+      };
+      // After FROM / JOIN / INTO / UPDATE / TABLE: table names first.
+      if (/(?:from|join|into|update|table)\s+[\w"]*$/i.test(tail)) {
+        push(completionCtx.collections, kind.Struct, "table");
+        return { suggestions: items };
+      }
+      push(completionCtx.fields, kind.Field, "column");
+      push(completionCtx.collections, kind.Struct, "table");
+      push(SQL_KEYWORDS, kind.Keyword, "keyword");
+      push(SQL_FUNCTIONS, kind.Function, "function", true);
+      push(SQL_TYPES, kind.TypeParameter, "type");
+      return { suggestions: items };
+    },
+  });
+
+  monaco.languages.setMonarchTokensProvider("pgsql", {
+    defaultToken: "",
+    ignoreCase: true,
+    keywords: SQL_KEYWORDS.flatMap((k) => k.toLowerCase().split(" ")),
+    literals: ["true", "false", "null"],
+    types: SQL_TYPES.flatMap((t) => t.split(" ")),
+    tokenizer: {
+      root: [
+        [/--.*$/, "comment"],
+        [/\/\*/, "comment", "@comment"],
+        [/\$([A-Za-z_]\w*)?\$/, { token: "string", next: "@dollar.$0" }],
+        [/[Ee]'/, { token: "string", next: "@estring" }],
+        [/'/, { token: "string", next: "@string" }],
+        [/"(?:[^"]|"")*"/, "key"],
+        [/::\s*[A-Za-z_][\w]*/, "constant.helper"],
+        [/[A-Za-z_][\w$]*(?=\s*\()/, "function"],
+        [
+          /[A-Za-z_][\w$]*/,
+          {
+            cases: {
+              "@literals": "keyword.literal",
+              "@keywords": "keyword",
+              "@types": "constant.helper",
+              "@default": "",
+            },
+          },
+        ],
+        [/\$\d+/, "operator.mongo"],
+        [/-?\d*\.\d+(?:[eE][-+]?\d+)?/, "number.float"],
+        [/\d+/, "number"],
+        [/[()]/, "@brackets"],
+        [/[,;.]/, "delimiter"],
+      ],
+      string: [
+        [/[^']+/, "string"],
+        [/''/, "string"],
+        [/'/, { token: "string", next: "@pop" }],
+      ],
+      estring: [
+        [/[^\\']+/, "string"],
+        [/\\./, "string"],
+        [/''/, "string"],
+        [/'/, { token: "string", next: "@pop" }],
+      ],
+      dollar: [
+        [/\$([A-Za-z_]\w*)?\$/, { cases: { "$0==$S2": { token: "string", next: "@pop" }, "@default": "string" } }],
+        [/[^$]+/, "string"],
+        [/\$/, "string"],
+      ],
+      comment: [
+        [/[^*/]+/, "comment"],
+        [/\/\*/, "comment", "@push"],
+        [/\*\//, "comment", "@pop"],
+        [/[*/]/, "comment"],
+      ],
+    },
+  });
+
+  monaco.languages.setLanguageConfiguration("pgsql", {
+    brackets: [["(", ")"], ["[", "]"]],
+    autoClosingPairs: [
+      { open: "(", close: ")" },
+      { open: "[", close: "]" },
+      { open: "'", close: "'", notIn: ["string", "comment"] },
+      { open: '"', close: '"', notIn: ["string", "comment"] },
+    ],
+    surroundingPairs: [
+      { open: "(", close: ")" },
+      { open: "'", close: "'" },
+      { open: '"', close: '"' },
+    ],
+    comments: { lineComment: "--", blockComment: ["/*", "*/"] },
+  });
 }
 
 /** Read a theme-kit token from the document root (hex or rgb). */

@@ -9,7 +9,10 @@ import {
   type ShellOutcome,
   type StageInput,
   type StageStat,
+  type TableMeta,
+  writeGuard,
 } from "@/lib/api";
+import { shellStarter } from "@/lib/engine";
 import { useSettings } from "@/stores/settings";
 
 export type ViewMode = "json" | "table";
@@ -90,6 +93,8 @@ export interface Tab {
   /** Copy number among tabs of the same collection (1, 2, ...). Stays fixed
    *  for the tab's lifetime so "#2" keeps meaning the same tab. */
   instance?: number;
+  /** PostgreSQL: columns and primary key of the table (loaded on open). */
+  meta?: TableMeta | null;
 }
 
 /** The copy number to show for a tab, or null when it's the only tab of its
@@ -117,7 +122,9 @@ export const newStage = (op = "$match", body = "{\n  \n}"): Stage => ({
 const freshDocs = (limit: number): DocsState => ({
   filter: "",
   // Newest-first by default (ObjectId _ids embed creation time); user can edit.
-  sort: "{ _id: -1 }",
+  // Postgres tables start unsorted; the primary key order is filled in once
+  // the table's metadata arrives.
+  sort: writeGuard.engine() === "postgres" ? "" : "{ _id: -1 }",
   projection: "",
   limit,
   page: 0,
@@ -147,7 +154,7 @@ const freshAgg = (): AggState => ({
 });
 
 const freshShell = (collection: string): ShellState => ({
-  text: `db.${/^[A-Za-z_][\w]*$/.test(collection) ? collection : `getCollection("${collection}")`}.find({})\n`,
+  text: shellStarter(writeGuard.engine(), collection),
   outcome: null,
   loading: false,
   error: null,
@@ -217,6 +224,8 @@ interface ExplorerState {
   runAggregate: (id: string, uptoStage?: number) => Promise<void>;
   runStageStats: (id: string) => Promise<void>;
   runShell: (id: string) => Promise<void>;
+  /** PostgreSQL: (re)load a tab's table metadata. */
+  loadMeta: (id: string) => Promise<TableMeta | null>;
 }
 
 export const useExplorer = create<ExplorerState>((set, get) => {
@@ -325,7 +334,12 @@ export const useExplorer = create<ExplorerState>((set, get) => {
         const current = get().selectedDb;
         if (!current || !databases.some((d) => d.name === current)) {
           const last = localStorage.getItem(LAST_DB_KEY);
+          const pg = writeGuard.engine() === "postgres";
+          const preferred = pg
+            ? (await import("@/stores/connections")).useConnections.getState().active?.defaultSchema ?? "public"
+            : null;
           const pick =
+            (preferred && databases.find((d) => d.name === preferred)?.name) ??
             databases.find((d) => d.name === last)?.name ??
             databases.find((d) => !["admin", "local", "config"].includes(d.name))?.name ??
             databases[0]?.name ??
@@ -484,9 +498,32 @@ export const useExplorer = create<ExplorerState>((set, get) => {
     patchAgg: (id, patch) => patchTab(id, (t) => ({ ...t, agg: { ...t.agg, ...patch } })),
     patchShell: (id, patch) => patchTab(id, (t) => ({ ...t, shell: { ...t.shell, ...patch } })),
 
-    runFind: async (id, opts) => {
+    loadMeta: async (id) => {
       const t = tab(id);
+      if (!t || writeGuard.engine() !== "postgres") return null;
+      try {
+        const meta = await api.tableMeta(t.database, t.collection);
+        patchTab(id, (x) => ({ ...x, meta }));
+        return meta;
+      } catch {
+        patchTab(id, (x) => ({ ...x, meta: null }));
+        return null;
+      }
+    },
+
+    runFind: async (id, opts) => {
+      let t = tab(id);
       if (!t) return;
+      // Postgres: learn the primary key first - it addresses rows and gives
+      // a stable default order for paging.
+      if (writeGuard.engine() === "postgres" && t.meta === undefined) {
+        const meta = await get().loadMeta(id);
+        if (meta && meta.primaryKey.length > 0 && !t.docs.sort.trim()) {
+          get().patchDocs(id, { sort: meta.primaryKey.map((k) => (/^[a-z_][a-z0-9_]*$/.test(k) ? k : `"${k}"`)).join(", ") });
+        }
+        t = tab(id);
+        if (!t) return;
+      }
       const docsState = opts?.resetPage ? { ...t.docs, page: 0 } : t.docs;
       get().patchDocs(id, { loading: true, error: null, page: docsState.page });
       try {
@@ -521,7 +558,18 @@ export const useExplorer = create<ExplorerState>((set, get) => {
           })
           .then((x) =>
             get().patchDocs(id, {
-              plan: x.isCollectionScan ? "COLLSCAN" : x.indexName ? `IXSCAN ${x.indexName}` : x.stages[0] ?? null,
+              plan:
+                writeGuard.engine() === "postgres"
+                  ? x.isCollectionScan
+                    ? "Seq Scan"
+                    : x.indexName
+                      ? `Index ${x.indexName}`
+                      : x.stages[0] ?? null
+                  : x.isCollectionScan
+                    ? "COLLSCAN"
+                    : x.indexName
+                      ? `IXSCAN ${x.indexName}`
+                      : x.stages[0] ?? null,
             })
           )
           .catch(() => get().patchDocs(id, { plan: null }));

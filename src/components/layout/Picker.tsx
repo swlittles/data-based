@@ -44,12 +44,13 @@ import { DbOverviewDialog } from "@/components/explorer/DbOverviewDialog";
 import { DuplicateCollectionDialog } from "@/components/explorer/DuplicateCollectionDialog";
 import { DropCollectionDialog, ClearCollectionDialog } from "@/components/explorer/CollectionDangerDialogs";
 import { tabNumber, useExplorer } from "@/stores/explorer";
-import { useConnections } from "@/stores/connections";
+import { useConnections, useEngine } from "@/stores/connections";
 import { PICKER_DEFAULT, PICKER_MAX, PICKER_MIN, useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { api, errMsg } from "@/lib/api";
 import { formatBytes, formatCount } from "@/lib/bson";
 import { cn } from "@/lib/utils";
+import { terms } from "@/lib/engine";
 
 const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 const NONE: string[] = [];
@@ -103,8 +104,10 @@ function Latency({ workspaceId, host, ssh }: { workspaceId: string; host: string
   );
 }
 
+const isView = (kind?: string) => kind === "view" || kind === "matview";
+
 function CollIcon({ kind }: { kind: string }) {
-  if (kind === "view") return <Eye className="text-accent-2" />;
+  if (isView(kind)) return <Eye className="text-accent-2" />;
   if (kind === "timeseries") return <Timer className="text-accent-2" />;
   return <i className="sw" />;
 }
@@ -114,6 +117,9 @@ function CollIcon({ kind }: { kind: string }) {
  * Collections / Saved queries. Width is drag-resizable (persisted).
  */
 export function Picker() {
+  const engine = useEngine();
+  const t = terms(engine);
+  const pg = engine === "postgres";
   const databases = useExplorer((s) => s.databases);
   const loadingDbs = useExplorer((s) => s.loadingDbs);
   const collections = useExplorer((s) => s.collections);
@@ -180,7 +186,7 @@ export function Picker() {
 
   const dbInfo = databases.find((d) => d.name === selectedDb);
   const allColls = selectedDb ? collections[selectedDb] ?? null : null;
-  const viewCount = allColls?.filter((c) => c.kind === "view").length ?? 0;
+  const viewCount = allColls?.filter((c) => isView(c.kind)).length ?? 0;
 
   const pinnedItems = pinned
     .map((key) => {
@@ -242,7 +248,7 @@ export function Picker() {
       </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem disabled={readOnly} onSelect={() => setDupTarget({ db, coll })}>
-        <CopyPlus /> Duplicate collection
+        <CopyPlus /> Duplicate {t.coll}
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => setCopyTarget({ db, coll })}>
         <Send /> Copy to another workspace
@@ -250,7 +256,7 @@ export function Picker() {
       <ContextMenuItem onSelect={() => setDiffTarget({ db, coll })}>
         <GitCompare /> Diff with
       </ContextMenuItem>
-      {kind !== "view" && (
+      {!isView(kind) && (
         <>
           <ContextMenuSeparator />
           <ContextMenuItem
@@ -258,7 +264,7 @@ export function Picker() {
             onSelect={() => setClearTarget({ db, coll })}
             className="text-danger focus:text-danger"
           >
-            <Eraser /> Clear collection
+            <Eraser /> Clear {t.coll}
           </ContextMenuItem>
         </>
       )}
@@ -267,7 +273,7 @@ export function Picker() {
         onSelect={() => setDropTarget({ db, coll })}
         className="text-danger focus:text-danger"
       >
-        <Trash2 /> Drop collection
+        <Trash2 /> Drop {kind === "view" ? "view" : kind === "matview" ? "materialized view" : t.coll}
       </ContextMenuItem>
     </ContextMenuContent>
   );
@@ -277,9 +283,9 @@ export function Picker() {
       <div className="ph">
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
-            <button className="db" aria-label="Choose database">
+            <button className="db" aria-label={`Choose ${t.db}`}>
               <Database />
-              <b>{selectedDb ?? (loadingDbs ? "Loading" : "No database")}</b>
+              <b>{selectedDb ?? (loadingDbs ? "Loading" : `No ${t.db}`)}</b>
               <span>{dbInfo ? formatBytes(dbInfo.sizeOnDisk) : ""}</span>
               {loadingDbs ? (
                 <Loader2 className="spin" />
@@ -291,7 +297,10 @@ export function Picker() {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-[260px]">
-            <DropdownMenuLabel>Databases · {databases.length}</DropdownMenuLabel>
+            <DropdownMenuLabel>
+              {pg && active?.database ? `${active.database} · ` : ""}
+              {t.Db}s · {databases.length}
+            </DropdownMenuLabel>
             <div className="max-h-[320px] overflow-auto">
               {databases.map((d) => (
                 <DropdownMenuItem
@@ -307,7 +316,7 @@ export function Picker() {
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => void loadDatabases()} className="gap-2">
-              <RefreshCw className="h-3.5 w-3.5" /> Refresh databases
+              <RefreshCw className="h-3.5 w-3.5" /> Refresh {t.dbs}
             </DropdownMenuItem>
             {selectedDb && (
               <DropdownMenuItem onSelect={() => setOverviewDb(selectedDb)} className="gap-2">
@@ -330,7 +339,7 @@ export function Picker() {
               openCollection(selectedDb, colls[0].name);
             }
           }}
-          placeholder="Collections and fields"
+          placeholder={pg ? "Tables and columns" : "Collections and fields"}
           spellCheck={false}
         />
         {sidebarFilter ? (
@@ -417,11 +426,11 @@ export function Picker() {
         )}
 
         <div className="gh">
-          Collections{colls && <span className="n">{colls.length}</span>}
+          {t.Coll}s{colls && <span className="n">{colls.length}</span>}
         </div>
         {!selectedDb && !loadingDbs && (
           <p className="px-2 py-3 text-center text-[11.5px] text-text-3">
-            {databases.length === 0 ? "No databases visible" : "Pick a database above"}
+            {databases.length === 0 ? `No ${t.dbs} visible` : `Pick a ${t.db} above`}
           </p>
         )}
         {selectedDb && colls === null && (
@@ -445,6 +454,8 @@ export function Picker() {
                   <span className="n">{c.name}</span>
                   {c.kind === "view" ? (
                     <span className="c">view</span>
+                  ) : c.kind === "matview" ? (
+                    <span className="c">mview</span>
                   ) : c.kind === "timeseries" ? (
                     <span className="c">ts</span>
                   ) : counts[key] !== undefined ? (
@@ -457,7 +468,7 @@ export function Picker() {
           );
         })}
         {colls && colls.length === 0 && (
-          <p className="px-2 py-2 text-[11.5px] text-text-3">{filter ? "No matches" : "Empty database"}</p>
+          <p className="px-2 py-2 text-[11.5px] text-text-3">{filter ? "No matches" : `Empty ${t.db}`}</p>
         )}
 
         {(() => {
@@ -511,8 +522,8 @@ export function Picker() {
       <div className="pickfoot">
         <span className="min-w-0 truncate">
           {allColls
-            ? `${formatCount(allColls.length - viewCount)} collection${allColls.length - viewCount === 1 ? "" : "s"}${viewCount ? ` · ${viewCount} view${viewCount === 1 ? "" : "s"}` : ""}`
-            : `${formatCount(databases.length)} database${databases.length === 1 ? "" : "s"}`}
+            ? `${formatCount(allColls.length - viewCount)} ${allColls.length - viewCount === 1 ? t.coll : t.colls}${viewCount ? ` · ${viewCount} view${viewCount === 1 ? "" : "s"}` : ""}`
+            : `${formatCount(databases.length)} ${databases.length === 1 ? t.db : t.dbs}`}
         </span>
         {active && <Latency workspaceId={active.id} host={active.hostSummary} ssh={active.ssh} />}
         <Tooltip>
@@ -528,7 +539,7 @@ export function Picker() {
               {loadingDbs ? <Loader2 className="spin" /> : <RefreshCw />}
             </button>
           </TooltipTrigger>
-          <TooltipContent>Refresh databases and collections</TooltipContent>
+          <TooltipContent>Refresh {t.dbs} and {t.colls}</TooltipContent>
         </Tooltip>
       </div>
 

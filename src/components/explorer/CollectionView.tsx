@@ -15,7 +15,9 @@ import { SchemaPane } from "@/components/explorer/SchemaSheet";
 import { Dock } from "@/components/explorer/Dock";
 import { tabNumber, useExplorer, type Tab, type TabMode } from "@/stores/explorer";
 import { useSettings } from "@/stores/settings";
-import { useConnections } from "@/stores/connections";
+import { useConnections, useEngine } from "@/stores/connections";
+import { terms } from "@/lib/engine";
+import { useIdentity } from "@/components/explorer/useIdentity";
 import { api, type CollectionStats } from "@/lib/api";
 import { exportCollection, importDocuments } from "@/lib/files";
 import { formatBytes, formatCount } from "@/lib/bson";
@@ -47,6 +49,11 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
   const readOnly = useConnections(
     (s) => s.workspaces.find((w) => w.info.id === s.activeId)?.readOnly ?? false
   );
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  const ident = useIdentity(tab);
+  const canInsert = !readOnly && ident.editable;
   const [stats, setStats] = useState<CollectionStats | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -80,7 +87,11 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
             )}
           </h1>
           <div className="sub">
-            {tab.database} · {count === null || count === undefined ? "?" : formatCount(count)} documents
+            {pg && tab.meta && tab.meta.kind !== "table" && <span className="pill">{tab.meta.kind === "matview" ? "materialized view" : tab.meta.kind}</span>}
+            {tab.database} · {count === null || count === undefined ? "?" : formatCount(count)} {t.docs}
+            {pg && tab.meta && tab.meta.primaryKey.length === 0 && ident.editable && (
+              <span className="pill warn" title="Rows can only be changed with bulk update / delete or the SQL shell">no primary key</span>
+            )}
             {stats?.nindexes != null && (
               <button className="pill" onClick={() => setTabMode(tab.id, "indexes")}>
                 {stats.nindexes} index{stats.nindexes === 1 ? "" : "es"}
@@ -95,7 +106,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
             <div className="v">{formatBytes(stats?.size)}</div>
           </div>
           <div>
-            <div className="l">Avg doc</div>
+            <div className="l">Avg {t.doc}</div>
             <div className="v">{formatBytes(stats?.avgObjSize)}</div>
           </div>
           <div>
@@ -111,7 +122,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
 
       <div className="viewrow no-select">
         <div className="tabsl" role="tablist">
-          {VIEWS.map((v) => (
+          {VIEWS.map((v) => ({ ...v, label: pg && v.id === "documents" ? "JSON" : v.label })).map((v) => (
             <button
               key={v.id}
               role="tab"
@@ -134,7 +145,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-[300px] p-0">
               <div className="border-b border-line px-3 py-2">
-                <div className="lbl">Export · {tab.docs.filter.trim() ? "current filter" : "all documents"}</div>
+                <div className="lbl">Export · {tab.docs.filter.trim() ? "current filter" : `all ${t.docs}`}</div>
                 <div className="mt-0.5 font-mono text-[10.5px] text-text-3">
                   {tab.docs.filter.trim() ? tab.docs.filter.trim().slice(0, 60) : `${tab.database}.${tab.collection}`}
                 </div>
@@ -143,11 +154,13 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
                 {(
                   [
                     ["json", "JSON", "one array, pretty printed"],
-                    ["ndjson", "NDJSON", "one document per line"],
+                    ["ndjson", "NDJSON", `one ${t.doc} per line`],
                     ["csv", "CSV", "flat columns for spreadsheets"],
                     ["bson", "BSON", "mongodump-compatible archive"],
                   ] as const
-                ).map(([format, label, hint]) => (
+                )
+                  .filter(([format]) => !(pg && format === "bson"))
+                  .map(([format, label, hint]) => (
                   <DropdownMenuItem
                     key={format}
                     className="gap-2.5 py-2"
@@ -173,7 +186,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
               <div className="p-1.5">
                 <DropdownMenuItem
                   className="gap-2.5 py-2"
-                  disabled={readOnly || importing}
+                  disabled={!canInsert || importing}
                   onClick={() => {
                     setImporting(true);
                     void importDocuments(tab.database, tab.collection)
@@ -185,7 +198,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
                 >
                   {importing ? <Loader2 className="spin h-3.5 w-3.5" /> : <Upload className="h-3.5 w-3.5 text-text-3" />}
                   <span className="text-[12px] text-text">Choose a file</span>
-                  <span className="text-[11px] text-text-3">JSON · NDJSON · CSV · BSON</span>
+                  <span className="text-[11px] text-text-3">{pg ? "JSON · NDJSON · CSV" : "JSON · NDJSON · CSV · BSON"}</span>
                 </DropdownMenuItem>
               </div>
             </DropdownMenuContent>
@@ -194,7 +207,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
             <TooltipTrigger asChild>
               <button
                 className="btn pri"
-                disabled={readOnly}
+                disabled={!canInsert}
                 onClick={() => {
                   if (!inFind) setTabMode(tab.id, "documents");
                   setDrawer(tab.id, { kind: "insert" });
@@ -205,7 +218,11 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
               </button>
             </TooltipTrigger>
             <TooltipContent>
-              {readOnly ? "Read-only workspace - switch to edit mode first" : "Insert a document (⌘N)"}
+              {readOnly
+                ? "Read-only workspace - switch to edit mode first"
+                : !ident.editable
+                  ? `A ${tab.meta?.kind ?? "view"} can't be edited`
+                  : `Insert a ${t.doc} (⌘N)`}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -213,7 +230,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
 
       {inFind && <DocumentsPane tab={tab} />}
       {tab.mode === "schema" && <SchemaPane tab={tab} active={active} />}
-      {tab.mode === "aggregate" && <AggregatePane tab={tab} />}
+      {tab.mode === "aggregate" && !pg && <AggregatePane tab={tab} />}
       {tab.mode === "indexes" && <IndexesPane tab={tab} active={active} readOnly={readOnly} />}
       {tab.mode === "shell" && advancedMode && <ShellPane tab={tab} />}
 

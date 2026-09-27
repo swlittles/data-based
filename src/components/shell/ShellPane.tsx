@@ -17,6 +17,8 @@ import { useSettings } from "@/stores/settings";
 import { api, type Doc } from "@/lib/api";
 import { setShellCompletions } from "@/lib/monaco";
 import { AssistMenu, AssistPanel, useQueryAssist } from "@/components/ai/QueryAssist";
+import { useEngine } from "@/stores/connections";
+import { MONGO_IDENTITY, identityFor, sqlIdent } from "@/lib/engine";
 
 export function ShellPane({ tab }: { tab: Tab }) {
   const patchShell = useExplorer((s) => s.patchShell);
@@ -24,6 +26,11 @@ export function ShellPane({ tab }: { tab: Tab }) {
   const { shellHistory, clearShellHistory, shellEditorHeight, setShellEditorHeight } =
     useSettings();
   const setDrawer = useExplorer((s) => s.setDrawer);
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  // Shell results are shown read-only for Postgres (they can come from any
+  // query), so no primary key is needed to open them.
+  const ident = pg ? identityFor("postgres", null) : MONGO_IDENTITY;
 
   // Stable across keystrokes so the memoized ResultsViewer doesn't rebuild
   // the whole result set every time the query text changes.
@@ -32,7 +39,7 @@ export function ShellPane({ tab }: { tab: Tab }) {
     [setDrawer, tab.id]
   );
   const activeKey =
-    tab.drawer.kind === "doc" && tab.drawer.source === "shell" ? docSelectionKey(tab.drawer.doc) : null;
+    tab.drawer.kind === "doc" && tab.drawer.source === "shell" ? docSelectionKey(tab.drawer.doc, ident) : null;
 
   // Drag the handle under the editor to resize it (height persists in settings).
   const startResize = (e: React.PointerEvent) => {
@@ -85,7 +92,9 @@ export function ShellPane({ tab }: { tab: Tab }) {
           {tab.database}
         </span>
         <span className="font-mono text-[11px] text-text-3">
-          one statement at a time · db.collection.method(), show dbs, use other
+          {pg
+            ? "SQL · several statements run top to bottom · SET search_path TO other switches schema"
+            : "one statement at a time · db.collection.method(), show dbs, use other"}
         </span>
         <div className="flex-1" />
 
@@ -142,8 +151,13 @@ export function ShellPane({ tab }: { tab: Tab }) {
           onRun={() => void runShell(tab.id)}
           height={shellEditorHeight}
           autoFocus
-          placeholder={`db.${tab.collection}.find({ status: "active" }).sort({ createdAt: -1 }).limit(20)`}
+          placeholder={
+            pg
+              ? `SELECT * FROM ${sqlIdent(tab.collection)} WHERE status = 'active' ORDER BY created_at DESC LIMIT 20;`
+              : `db.${tab.collection}.find({ status: "active" }).sort({ createdAt: -1 }).limit(20)`
+          }
           path={`shell/${tab.id}`}
+          language={pg ? "pgsql" : "mongodb"}
         />
         <div
           onPointerDown={startResize}
@@ -176,7 +190,11 @@ export function ShellPane({ tab }: { tab: Tab }) {
       {outcome?.appliedDefaultLimit && !s.error && (
         <div className="notice mx-[var(--pad)] mb-2 shrink-0">
           <Info />
-          <span>Results were capped - chain .limit(n) to control how many come back.</span>
+          <span>
+            {pg
+              ? "Showing the first 1,000 rows - add LIMIT / OFFSET to page through the rest."
+              : "Results were capped - chain .limit(n) to control how many come back."}
+          </span>
         </div>
       )}
 
@@ -184,8 +202,13 @@ export function ShellPane({ tab }: { tab: Tab }) {
         <>
           <div className="no-select flex shrink-0 items-center gap-2 border-t border-line px-[var(--pad)] py-1.5">
             <span className="font-mono text-[11px] text-text-3">
-              {outcome.docs.length} document{outcome.docs.length === 1 ? "" : "s"} ·{" "}
-              {outcome.execMs}ms
+              {outcome.docs.length} {pg ? "row" : "document"}
+              {outcome.docs.length === 1 ? "" : "s"} · {outcome.execMs}ms
+              {pg && outcome.message && outcome.message.includes("\n") && (
+                <span className="ml-2" title={outcome.message}>
+                  · {outcome.message.split("\n").length} statements
+                </span>
+              )}
             </span>
             <div className="flex-1" />
             <ViewToggle view={s.view} onChange={(view) => patchShell(tab.id, { view })} />
@@ -194,8 +217,9 @@ export function ShellPane({ tab }: { tab: Tab }) {
             docs={outcome.docs}
             view={s.view}
             actions={docActions}
-            emptyText="No documents returned"
+            emptyText={pg ? "The query returned no rows" : "No documents returned"}
             activeKey={activeKey}
+            identity={ident}
           />
         </>
       )}
@@ -211,17 +235,18 @@ export function ShellPane({ tab }: { tab: Tab }) {
       {(outcome?.kind === "message" || outcome?.kind === "useDb") && (
         <div className="notice acc mono mx-[var(--pad)] shrink-0">
           <CheckCircle2 />
-          <span>{outcome.message}</span>
+          <span className="whitespace-pre-wrap">{outcome.message}</span>
         </div>
       )}
 
       {!outcome && !s.error && !s.loading && (
         <div className="no-select flex flex-1 items-center justify-center text-center">
           <div>
-            <p className="text-[13px] font-medium text-text-2">Real shell syntax</p>
+            <p className="text-[13px] font-medium text-text-2">{pg ? "Plain PostgreSQL" : "Real shell syntax"}</p>
             <p className="mx-auto mt-1 max-w-[340px] text-[12px] text-text-3">
-              find / aggregate / update / indexes - with ObjectId(), ISODate(), unquoted keys,
-              comments and method chaining. This runs exactly what you type.
+              {pg
+                ? "SELECT, joins, CTEs, DDL, transactions - statements run one after another on one connection, like psql. Read-only workspaces run inside a READ ONLY transaction."
+                : "find / aggregate / update / indexes - with ObjectId(), ISODate(), unquoted keys, comments and method chaining. This runs exactly what you type."}
             </p>
           </div>
         </div>

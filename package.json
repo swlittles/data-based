@@ -1,7 +1,7 @@
 {
   "name": "mongo-bongo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -61,7 +61,7 @@
     "vite": "^7.0.4",
     "vitest": "^3.2.7"
   },
-  "description": "Free, no-nonsense MongoDB desktop client",
+  "description": "Free, no-nonsense MongoDB and PostgreSQL desktop client",
   "license": "MIT",
   "overrides": {
     "dompurify": "^3.4.9"

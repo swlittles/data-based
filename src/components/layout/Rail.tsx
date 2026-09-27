@@ -63,7 +63,8 @@ export function Rail() {
     const busy = p ? connectingId === p.id : false;
     const readOnly = ws ? ws.readOnly : access !== "readwrite";
     const prod = access === "production";
-    const label = `${name}${prod ? " · production" : access === "readonly" ? " · read-only" : ""}${on ? " · active" : live ? " · open in background" : " · disconnected"}`;
+    const pgTile = (p?.engine ?? ws?.info.engine) === "postgres";
+    const label = `${name}${pgTile ? " · PostgreSQL" : ""}${prod ? " · production" : access === "readonly" ? " · read-only" : ""}${on ? " · active" : live ? " · open in background" : " · disconnected"}`;
     const onClick = () => {
       if (ws) void switchTo(ws.info.id);
       else if (p) void connect(p.id);

@@ -56,7 +56,7 @@ export function StatusBar() {
       stats = <span>{tab.shell.outcome.execMs} ms</span>;
     }
   } else if (active) {
-    stats = <span>No collection open</span>;
+    stats = <span>No {active.engine === "postgres" ? "table" : "collection"} open</span>;
   }
 
   const tz = (() => {
@@ -112,7 +112,12 @@ export function StatusBar() {
           </span>
         )}
         {stats}
-        {active && <span>MongoDB {active.serverVersion}</span>}
+        {active && (
+          <span>
+            {active.engine === "postgres" ? "PostgreSQL" : "MongoDB"} {active.serverVersion}
+            {active.engine === "postgres" && active.database ? ` · ${active.database}` : ""}
+          </span>
+        )}
         {security?.degraded && (
           <Tooltip>
             <TooltipTrigger asChild>

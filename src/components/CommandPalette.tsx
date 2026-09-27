@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Brush, Database, Key, Plus, Rows3, Search, Settings, Sparkles, Terminal } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useExplorer } from "@/stores/explorer";
-import { useConnections } from "@/stores/connections";
+import { useConnections, useEngine } from "@/stores/connections";
 import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
 import { formatCount } from "@/lib/bson";
+import { terms } from "@/lib/engine";
 import { cn } from "@/lib/utils";
 
 interface CommandPaletteProps {
@@ -51,7 +52,8 @@ function Hi({ text, q }: { text: string; q: string }) {
 
 /**
  * The palette: one input that spans collections, databases, connections and
- * actions. Enter opens, Cmd+Enter opens a collection in a new tab.
+ * actions. Enter opens, Cmd+Enter opens a collection in a new tab. For a
+ * PostgreSQL workspace the words are tables / schemas / rows.
  */
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const databases = useExplorer((s) => s.databases);
@@ -70,6 +72,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const setAdvancedMode = useSettings((s) => s.setAdvancedMode);
   const ui = useUi((s) => s.set);
   const openConnections = useUi((s) => s.openConnections);
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
 
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -127,7 +132,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             {
               kind: "action" as const,
               key: "a:shell",
-              label: `Shell on ${activeTab.collection}`,
+              label: `${pg ? "SQL shell" : "Shell"} on ${activeTab.collection}`,
               run: () => {
                 setAdvancedMode(true);
                 openCollectionAs(activeTab.database, activeTab.collection, "shell");
@@ -156,12 +161,12 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       ).slice(0, max);
 
     return [
-      { title: "Collections", items: rank(colls, q ? 40 : 12) },
-      { title: "Databases", items: rank(dbs, q ? 10 : 0) },
+      { title: pg ? "Tables" : "Collections", items: rank(colls, q ? 40 : 12) },
+      { title: pg ? "Schemas" : "Databases", items: rank(dbs, q ? 10 : 0) },
       { title: "Connections", items: rank(conns, q ? 10 : 4) },
       { title: "Actions", items: rank(actions, q ? 8 : 4) },
     ].filter((g) => g.items.length > 0);
-  }, [databases, collections, counts, profiles, workspaces, q, activeTab, openConnections, ui, setAdvancedMode, openCollectionAs]);
+  }, [databases, collections, counts, profiles, workspaces, q, activeTab, openConnections, ui, setAdvancedMode, openCollectionAs, pg]);
 
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
@@ -220,7 +225,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                     pick(flat[cursor], e.metaKey || e.ctrlKey);
                   }
                 }}
-                placeholder="Jump to a collection, database, connection or action"
+                placeholder={`Jump to a ${t.coll}, ${t.db}, connection or action`}
                 spellCheck={false}
               />
               <span className="kbd">esc</span>
@@ -260,9 +265,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                           )}
                         </span>
                         <span className="r">
-                          {item.kind === "collection" && item.count !== undefined && `${formatCount(item.count)} docs`}
+                          {item.kind === "collection" && item.count !== undefined && `${formatCount(item.count)} ${pg ? "rows" : "docs"}`}
                           {item.kind === "connection" && (item.live ? <span className="pill ok">live</span> : "connect")}
-                          {item.kind === "database" && "switch database"}
+                          {item.kind === "database" && `switch ${t.db}`}
                           {item.kind === "action" && item.hint}
                         </span>
                       </button>
@@ -275,7 +280,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
               <span>↑↓ navigate</span>
               <span>⏎ open</span>
               <span>⌘⏎ open in new tab</span>
-              <span className="ml-auto">collections · databases · connections · actions</span>
+              <span className="ml-auto">{t.colls} · {t.dbs} · connections · actions</span>
             </div>
           </DialogPrimitive.Content>
         </DialogPrimitive.Overlay>

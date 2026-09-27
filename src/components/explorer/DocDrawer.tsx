@@ -10,6 +10,8 @@ import { DRAWER_DEFAULT, DRAWER_MAX, DRAWER_MIN, useSettings } from "@/stores/se
 import { api, errMsg, type Doc } from "@/lib/api";
 import { docId, idLabel, kindOf, leafText, toShellText, dateOf, type BsonKind } from "@/lib/bson";
 import { diffDocs, previewValue } from "@/lib/diff";
+import { docText, insertTemplate, rowId, rowIdText, rowLabel, shortType, terms } from "@/lib/engine";
+import { useIdentity } from "@/components/explorer/useIdentity";
 import { cn } from "@/lib/utils";
 
 type Seg = "fields" | "json" | "diff";
@@ -134,14 +136,20 @@ function FieldRow({
   path,
   depth,
   readOnly,
+  locked,
+  typeLabel,
   onChange,
   onRemove,
 }: {
+  /** Declared type (Postgres columns) shown instead of the JSON kind. */
+  typeLabel?: string;
   name: string;
   value: unknown;
   path: (string | number)[];
   depth: number;
   readOnly: boolean;
+  /** Top-level fields that can't be edited (`_id`, generated columns). */
+  locked: ReadonlySet<string>;
   onChange: (path: (string | number)[], value: unknown) => void;
   onRemove: (path: (string | number)[]) => void;
 }) {
@@ -150,7 +158,7 @@ function FieldRow({
   const [text, setText] = useState("");
   const [open, setOpen] = useState(depth < 1);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const isId = path.length === 1 && path[0] === "_id";
+  const isId = path.length >= 1 && locked.has(String(path[0]));
   const canEdit = !readOnly && !isId && EDITABLE.includes(kind);
 
   const start = () => {
@@ -187,7 +195,7 @@ function FieldRow({
           {open ? <ChevronDown /> : <ChevronRight />}
           <span className="ky">{name}</span>
           <span className="tt">
-            {TYPE_ABBR[kind]} · {entries.length}
+            {typeLabel ?? TYPE_ABBR[kind]} · {entries.length}
           </span>
           {!readOnly && !isId && (
             <button
@@ -211,6 +219,7 @@ function FieldRow({
               path={[...path, k]}
               depth={depth + 1}
               readOnly={readOnly}
+              locked={locked}
               onChange={onChange}
               onRemove={onRemove}
             />
@@ -223,7 +232,7 @@ function FieldRow({
     <div className={cn("frow group/row", editing && "edit", !canEdit && "ro")}>
       <div className="fk" style={{ paddingLeft: depth * 14 }} title={name}>
         <span className="truncate">{name}</span>
-        <span className="tt">{TYPE_ABBR[kind] ?? kind}</span>
+        <span className="tt">{typeLabel ?? TYPE_ABBR[kind] ?? kind}</span>
       </div>
       <div className="relative">
         <div
@@ -287,8 +296,26 @@ export function DocDrawer({ tab }: { tab: Tab }) {
   const runFind = useExplorer((s) => s.runFind);
   const runAggregate = useExplorer((s) => s.runAggregate);
   const runShell = useExplorer((s) => s.runShell);
-  const readOnly = useConnections(
+  const wsReadOnly = useConnections(
     (s) => s.workspaces.find((w) => w.info.id === s.activeId)?.readOnly ?? false
+  );
+  const ident = useIdentity(tab);
+  const engine = ident.engine;
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  // Rows of views can be looked at, not saved - and so can SQL shell results,
+  // which may come from any table or join.
+  const shellRow = pg && tab.drawer.kind === "doc" && tab.drawer.source === "shell";
+  const readOnly = wsReadOnly || !ident.editable || shellRow;
+  const locked = useMemo<ReadonlySet<string>>(() => {
+    if (!pg) return new Set(["_id"]);
+    return new Set(
+      (tab.meta?.columns ?? []).filter((c) => c.generated || c.identity === "a").map((c) => c.name)
+    );
+  }, [pg, tab.meta]);
+  const columnTypes = useMemo<Record<string, string>>(
+    () => (pg && tab.meta ? Object.fromEntries(tab.meta.columns.map((c) => [c.name, shortType(c.dataType)])) : {}),
+    [pg, tab.meta]
   );
   const { drawerWidth, setDrawerWidth } = useSettings();
   const [liveWidth, setLiveWidth] = useState<number | null>(null);
@@ -324,12 +351,19 @@ export function DocDrawer({ tab }: { tab: Tab }) {
     setAddOpen(false);
     if (drawer.kind === "doc") {
       setDraft(structuredClone(drawer.doc));
-      setText(toShellText(drawer.doc));
+      setText(docText(drawer.doc, engine));
       setSeg(drawer.view ?? "fields");
     } else if (drawer.kind === "insert") {
-      const base: Doc = drawer.template ? (({ _id: _drop, ...rest }) => rest)(drawer.template) : {};
-      setDraft(base);
-      setText(drawer.template ? toShellText(base) : "{\n  \n}");
+      if (pg) {
+        // Rows start from the table's required columns (or the duplicated row).
+        const base: Doc = drawer.template ?? insertTemplate(tab.meta);
+        setDraft(base);
+        setText(Object.keys(base).length ? docText(base, engine) : "{\n  \n}");
+      } else {
+        const base: Doc = drawer.template ? (({ _id: _drop, ...rest }) => rest)(drawer.template) : {};
+        setDraft(base);
+        setText(drawer.template ? toShellText(base) : "{\n  \n}");
+      }
       setSeg("json");
     }
   }, [targetKey]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -344,7 +378,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
   // Entering the JSON view re-serialises field edits; leaving it with text
   // edits keeps the text as the source of truth (fields become read-only).
   const goTo = (next: Seg) => {
-    if (next === "json" && !jsonDirty) setText(toShellText(draft));
+    if (next === "json" && !jsonDirty) setText(docText(draft, engine));
     setSeg(next);
   };
 
@@ -360,14 +394,16 @@ export function DocDrawer({ tab }: { tab: Tab }) {
     setBusy(true);
     setError(null);
     try {
-      const body = jsonDirty || seg === "json" || isInsert ? text : toShellText(draft);
+      const body = jsonDirty || seg === "json" || isInsert ? text : docText(draft, engine);
       if (isInsert) {
         await api.insertDocument(tab.database, tab.collection, body);
-        toast.success("Document inserted");
+        toast.success(`${t.Doc} inserted`);
         close();
       } else if (original) {
-        await api.replaceDocument(tab.database, tab.collection, docId(original), body);
-        toast.success("Document saved");
+        const id = pg ? rowId(original, ident) : docId(original);
+        if (id === undefined) throw new Error(`This ${t.doc} has no primary key value and can't be saved individually`);
+        await api.replaceDocument(tab.database, tab.collection, id, body);
+        toast.success(`${t.Doc} saved`);
         close();
       }
       refresh();
@@ -382,7 +418,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
     if (isInsert) return close();
     if (original) {
       setDraft(structuredClone(original));
-      setText(toShellText(original));
+      setText(docText(original, engine));
       setJsonDirty(false);
       setError(null);
     }
@@ -425,7 +461,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
   if (drawer.kind === "closed") return null;
 
   const rootEntries = Object.entries(draft);
-  const idText = original ? idLabel(original) : "new document";
+  const idText = original ? (pg ? rowIdText(original, ident) : idLabel(original)) : `new ${t.doc}`;
 
   const addField = () => {
     const name = addName.trim();
@@ -437,7 +473,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
     if (v === "true" || v === "false") value = v === "true";
     else if (v === "null") value = null;
     else if (v !== "" && !Number.isNaN(Number(v))) value = Number(v);
-    else if (/^[0-9a-fA-F]{24}$/.test(v)) value = { $oid: v.toLowerCase() };
+    else if (!pg && /^[0-9a-fA-F]{24}$/.test(v)) value = { $oid: v.toLowerCase() };
     setDraft((d) => ({ ...d, [name]: value }));
     setAddName("");
     setAddValue("");
@@ -450,7 +486,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
       <div className="dhd no-select">
         <div className="t">
           {tab.collection}
-          <span title={idText}>{isInsert ? "new document" : idText}</span>
+          <span title={idText}>{isInsert ? `new ${t.doc}` : idText}</span>
         </div>
         <div className="r">
           <Tooltip>
@@ -458,24 +494,24 @@ export function DocDrawer({ tab }: { tab: Tab }) {
               <button
                 className="ico"
                 onClick={() => {
-                  void navigator.clipboard.writeText(jsonDirty || seg === "json" ? text : toShellText(draft));
-                  toast.success("Document copied");
+                  void navigator.clipboard.writeText(jsonDirty || seg === "json" ? text : docText(draft, engine));
+                  toast.success(`${t.Doc} copied`);
                 }}
-                aria-label="Copy document"
+                aria-label={`Copy ${t.doc}`}
               >
                 <Copy />
               </button>
             </TooltipTrigger>
-            <TooltipContent>Copy document</TooltipContent>
+            <TooltipContent>Copy {t.doc}</TooltipContent>
           </Tooltip>
           {!isInsert && !readOnly && original && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <button className="ico dgr" onClick={() => setConfirmDelete(true)} aria-label="Delete document">
+                <button className="ico dgr" onClick={() => setConfirmDelete(true)} aria-label={`Delete ${t.doc}`}>
                   <Trash2 />
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Delete this document</TooltipContent>
+              <TooltipContent>Delete this {t.doc}</TooltipContent>
             </Tooltip>
           )}
           <button className="ico" onClick={close} aria-label="Close drawer">
@@ -503,14 +539,14 @@ export function DocDrawer({ tab }: { tab: Tab }) {
           {jsonDirty ? (
             <div className="notice warn m-1">
               <span>
-                You edited this document as JSON. Save or discard those changes to go back to field editing.
+                You edited this {t.doc} as JSON. Save or discard those changes to go back to {t.field} editing.
               </span>
             </div>
           ) : (
             <>
               {rootEntries.length === 0 && (
                 <p className="px-2 py-6 text-center text-[12px] text-text-3">
-                  {isInsert ? "Add fields below, or switch to JSON." : "Empty document"}
+                  {isInsert ? `Add ${t.fields} below, or switch to JSON.` : `Empty ${t.doc}`}
                 </p>
               )}
               {rootEntries.map(([k, v]) => (
@@ -521,6 +557,8 @@ export function DocDrawer({ tab }: { tab: Tab }) {
                   path={[k]}
                   depth={0}
                   readOnly={readOnly}
+                  locked={locked}
+                  typeLabel={columnTypes[k]}
                   onChange={(path, value) => setDraft((d) => setAtPath(d, path, value))}
                   onRemove={(path) => setDraft((d) => deleteAtPath(d, path))}
                 />
@@ -532,7 +570,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
                       <input
                         className="in"
                         style={{ height: 28, padding: "0 8px", fontSize: 11.5 }}
-                        placeholder="field"
+                        placeholder={t.field}
                         value={addName}
                         onChange={(e) => setAddName(e.target.value)}
                         onKeyDown={(e) => e.key === "Enter" && addField()}
@@ -559,7 +597,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
                 ) : (
                   <button className="frow w-full text-left" style={{ opacity: 0.6 }} onClick={() => setAddOpen(true)}>
                     <div className="fk">
-                      <Plus style={{ width: 12, height: 12 }} /> add field
+                      <Plus style={{ width: 12, height: 12 }} /> add {t.field}
                     </div>
                     <div className="fv" style={{ background: "transparent" }}>
                       value
@@ -587,6 +625,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
             height="100%"
             autoFocus={isInsert}
             path={`drawer/${tab.id}/${targetKey}`}
+            language={pg ? "json" : "mongodb"}
           />
         </div>
       )}
@@ -632,11 +671,11 @@ export function DocDrawer({ tab }: { tab: Tab }) {
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
-        title="Delete document?"
+        title={`Delete ${t.doc}?`}
         description={
           <>
-            <span className="mono">_id {idText}</span> will be removed from {tab.database}.{tab.collection}. It cannot
-            be undone from Mongo Bongo.
+            <span className="mono">{original ? rowLabel(original, ident) : idText}</span> will be removed from {tab.database}.
+            {tab.collection}. It cannot be undone from Mongo Bongo.
           </>
         }
         confirmLabel="Delete"
@@ -646,8 +685,10 @@ export function DocDrawer({ tab }: { tab: Tab }) {
           if (!original) return;
           setBusy(true);
           try {
-            await api.deleteDocument(tab.database, tab.collection, docId(original));
-            toast.success("Document deleted");
+            const id = pg ? rowId(original, ident) : docId(original);
+            if (id === undefined) throw new Error(`This ${t.doc} can't be addressed individually`);
+            await api.deleteDocument(tab.database, tab.collection, id);
+            toast.success(`${t.Doc} deleted`);
             setConfirmDelete(false);
             close();
             refresh();
@@ -662,13 +703,19 @@ export function DocDrawer({ tab }: { tab: Tab }) {
       <div className="dfoot no-select">
         <span className="chg">
           {readOnly
-            ? "read-only"
+            ? wsReadOnly
+              ? "read-only"
+              : shellRow
+                ? "query result - read-only"
+              : pg && tab.meta && tab.meta.kind !== "table" && tab.meta.kind !== "partitioned"
+                ? `${tab.meta.kind === "matview" ? "materialized view" : tab.meta.kind} - read-only`
+                : "read-only"
             : isInsert
-              ? "new document"
+              ? `new ${t.doc}`
               : jsonDirty
                 ? "edited as JSON"
                 : changes.length > 0
-                  ? `${changes.length} field${changes.length === 1 ? "" : "s"} changed`
+                  ? `${changes.length} ${changes.length === 1 ? t.field : t.fields} changed`
                   : ""}
         </span>
         <div className="r">
