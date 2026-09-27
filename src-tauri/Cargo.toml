@@ -1,6 +1,6 @@
 [package]
 name = "mongo-bongo"
-version = "0.2.0"
+version = "0.2.1"
 description = "Mongo Bongo - the free, no-nonsense MongoDB and PostgreSQL desktop client"
 authors = ["swlittles"]
 license = "MIT"
