@@ -2,6 +2,7 @@ mod ai;
 mod commands;
 mod crypto;
 mod error;
+mod migrate;
 mod pg;
 mod portable;
 mod profiles;
@@ -14,6 +15,8 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any window exists: carry data over from the pre-rename app id.
+    migrate::run();
     tauri::Builder::default()
         .setup(|app| {
             #[cfg(desktop)]
@@ -26,7 +29,7 @@ pub fn run() {
                 app.handle().plugin(tauri_plugin_opener::init())?;
             }
 
-            // macOS: add "About Mongo Bongo" and "Check for Updates..." to the
+            // macOS: add "About Data Based" and "Check for Updates..." to the
             // system Help menu; both forward to the webview via menu-action.
             #[cfg(target_os = "macos")]
             {
@@ -34,7 +37,7 @@ pub fn run() {
                 let handle = app.handle();
                 let menu = Menu::default(handle)?;
                 let about =
-                    MenuItem::with_id(handle, "about-app", "About Mongo Bongo", true, None::<&str>)?;
+                    MenuItem::with_id(handle, "about-app", "About Data Based", true, None::<&str>)?;
                 let updates = MenuItem::with_id(
                     handle,
                     "check-updates",

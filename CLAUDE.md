@@ -1,4 +1,4 @@
-# Mongo Bongo - project instructions
+# Data Based - project instructions
 
 Tauri 2 (Rust, `src-tauri/`) + React 19 / Vite / Tailwind (`src/`) MongoDB and PostgreSQL
 desktop client.

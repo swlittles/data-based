@@ -170,7 +170,7 @@ export async function exportConnections(args: {
   passphrase?: string;
 }): Promise<boolean> {
   try {
-    const name = args.includeSecrets ? "mongo-bongo-connections-encrypted.json" : "mongo-bongo-connections.json";
+    const name = args.includeSecrets ? "data-based-connections-encrypted.json" : "data-based-connections.json";
     const path = await save({
       title: "Export connections",
       defaultPath: name,

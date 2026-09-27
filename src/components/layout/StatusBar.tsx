@@ -171,10 +171,10 @@ export function StatusBar() {
           <Tooltip>
             <TooltipTrigger asChild>
               <button className="v" onClick={() => ui({ about: true })}>
-                Mongo Bongo{version ? ` ${version}` : ""}
+                Data Based{version ? ` ${version}` : ""}
               </button>
             </TooltipTrigger>
-            <TooltipContent>About Mongo Bongo</TooltipContent>
+            <TooltipContent>About Data Based</TooltipContent>
           </Tooltip>
         </div>
       </footer>

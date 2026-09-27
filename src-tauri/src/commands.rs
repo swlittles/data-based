@@ -207,7 +207,7 @@ async fn establish(
             }
         }
     };
-    options.app_name.get_or_insert_with(|| format!("Mongo Bongo {}", env!("CARGO_PKG_VERSION")));
+    options.app_name.get_or_insert_with(|| format!("Data Based {}", env!("CARGO_PKG_VERSION")));
     options.connect_timeout.get_or_insert(Duration::from_secs(10));
     options.server_selection_timeout.get_or_insert(Duration::from_secs(8));
 

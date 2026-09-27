@@ -675,7 +675,7 @@ export function DocDrawer({ tab }: { tab: Tab }) {
         description={
           <>
             <span className="mono">{original ? rowLabel(original, ident) : idText}</span> will be removed from {tab.database}.
-            {tab.collection}. It cannot be undone from Mongo Bongo.
+            {tab.collection}. It cannot be undone from Data Based.
           </>
         }
         confirmLabel="Delete"

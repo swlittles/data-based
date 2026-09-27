@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    mongo_bongo_lib::run()
+    data_based_lib::run()
 }

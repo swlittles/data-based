@@ -1,5 +1,5 @@
 /* ==========================================================
-   MONGO BONGO APP · component layer (in-app copy of the design system)
+   DATA BASED APP · component layer (in-app copy of the design system)
    Reads only theme-kit tokens. No literal colours below except
    window-control dots. Density comes from the --row, --cell and --pad tokens.
    ========================================================== */

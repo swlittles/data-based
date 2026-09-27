@@ -246,7 +246,7 @@ export const useExplorer = create<ExplorerState>((set, get) => {
     drawer: { kind: "closed" },
   });
 
-  const LAST_DB_KEY = "mongo-bongo-last-db";
+  const LAST_DB_KEY = "data-based-last-db";
   /** Bumped whenever the explorer is swapped to another workspace, so a count
    *  request still in flight for the old one can't land in the new one. */
   let generation = 0;

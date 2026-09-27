@@ -47,7 +47,7 @@ export function AboutDialog({ open, onOpenChange, onWhatsNew }: AboutDialogProps
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[860px]">
-        <DialogTitle className="sr-only">About Mongo Bongo</DialogTitle>
+        <DialogTitle className="sr-only">About Data Based</DialogTitle>
         <DialogDescription className="sr-only">Version, licence and project links.</DialogDescription>
 
         <div className="grid min-h-0 grid-cols-[320px_1fr]">
@@ -68,7 +68,7 @@ export function AboutDialog({ open, onOpenChange, onWhatsNew }: AboutDialogProps
             <div className="relative flex flex-col items-center gap-4">
               <BrandTile size={96} />
               <div className="flex flex-col items-center gap-2">
-                <h2 className="font-display text-[40px] font-semibold leading-none tracking-[-0.03em] text-text">Mongo Bongo</h2>
+                <h2 className="font-display text-[40px] font-semibold leading-none tracking-[-0.03em] text-text">Data Based</h2>
                 <p className="max-w-[240px] text-[13px] leading-snug text-text-2">The free, no-nonsense MongoDB and PostgreSQL client.</p>
               </div>
             </div>

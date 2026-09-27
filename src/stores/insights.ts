@@ -38,6 +38,6 @@ export const useInsights = create<InsightsState>()(
         ),
       removeInsight: (id) => set((s) => ({ insights: s.insights.filter((i) => i.id !== id) })),
     }),
-    { name: "mongo-bongo-insights", version: 1 }
+    { name: "data-based-insights", version: 1 }
   )
 );

@@ -142,7 +142,7 @@ export function ConnectionManager() {
                   <div className="sub">
                     {view === "list"
                       ? "credentials are AES-256 encrypted at rest, on this machine only"
-                      : "paste a URI or fill the fields - Mongo Bongo parses either"}
+                      : "paste a URI or fill the fields - Data Based parses either"}
                   </div>
                 </div>
                 <button className="ico" onClick={closeConnections} aria-label="Close">

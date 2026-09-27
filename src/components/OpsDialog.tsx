@@ -86,7 +86,7 @@ function PermissionNotice({
         </div>
         <div className="text-text-2">
           Ask your administrator for the <span className="mono">{privilege}</span> {pg ? "access" : "privilege"} - usually by granting the{" "}
-          <span className="mono">{roles}</span> role - or reconnect with a user that has it. Everything else in Mongo Bongo
+          <span className="mono">{roles}</span> role - or reconnect with a user that has it. Everything else in Data Based
           keeps working; this only affects this view.
         </div>
         {onRetry && (

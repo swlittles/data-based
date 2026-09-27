@@ -5,8 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-KEY="$HOME/.tauri/mongo-bongo.key"
-PASS="$HOME/.tauri/mongo-bongo.key.password"
+KEY="$HOME/.tauri/data-based.key"
+PASS="$HOME/.tauri/data-based.key.password"
 if [[ ! -f "$KEY" || ! -f "$PASS" ]]; then
   echo "Missing $KEY or $PASS - see RELEASING.md" >&2
   exit 1

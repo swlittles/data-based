@@ -1,4 +1,4 @@
-# Mongo Bongo shell syntax
+# Data Based shell syntax
 
 The shell tab (and the filter / sort / projection boxes, and the document
 editor) understand mongosh-flavored syntax - not just strict JSON.

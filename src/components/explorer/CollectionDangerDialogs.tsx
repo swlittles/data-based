@@ -173,7 +173,7 @@ export function DropCollectionDialog({
                   {indexes !== null && ` and ${indexes} index${indexes === 1 ? "" : "es"}`}.
                 </>
               )}{" "}
-              It cannot be undone from Mongo Bongo - there is no local snapshot of this {what}.
+              It cannot be undone from Data Based - there is no local snapshot of this {what}.
               {pg &&
                 " PostgreSQL refuses the drop while other tables' foreign keys or other views depend on it (there is no CASCADE here)."}
             </div>
@@ -291,7 +291,7 @@ export function ClearCollectionDialog({
             <TriangleAlert />
             <div>
               This deletes <b>{count === null ? "every" : formatCount(count)} {count === 1 ? t.doc : t.docs}</b>{" "}
-              in the {t.coll}. The {t.coll} and its indexes stay. It cannot be undone from Mongo Bongo.
+              in the {t.coll}. The {t.coll} and its indexes stay. It cannot be undone from Data Based.
               {pg &&
                 " It runs DELETE FROM, so triggers fire and rows still referenced by another table's foreign key make the whole clear fail."}
             </div>

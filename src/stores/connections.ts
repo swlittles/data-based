@@ -30,7 +30,7 @@ const newWorkspace = (info: ConnectionInfo): Workspace => {
 
 /** Persisted across restarts so open workspaces auto-reconnect on launch. Only
  *  saved profiles can be restored - ad-hoc connections have no stored secret. */
-const SESSION_KEY = "mongo-bongo-sessions";
+const SESSION_KEY = "data-based-sessions";
 interface SessionShape {
   /** Profile ids of the workspaces that were open, in order. */
   profileIds: string[];

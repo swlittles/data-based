@@ -6,8 +6,27 @@ use std::path::PathBuf;
 
 use crate::error::{AppError, AppResult};
 
-const KEYRING_SERVICE: &str = "com.swlittles.mongobongo";
+const KEYRING_SERVICE: &str = "com.swlittles.databased";
 const KEYRING_USER: &str = "master-key";
+/// Names from before the app was renamed (Mongo Bongo). Read once, then the
+/// key lives under the new names - it is never regenerated.
+const LEGACY_KEYRING_SERVICE: &str = "com.swlittles.mongobongo";
+const KEY_FILE: &str = "data-based.key";
+const LEGACY_KEY_FILE: &str = "mongo-bongo.key";
+
+/// The key file path, adopting a pre-rename key file on first use. Getting
+/// this wrong would mint a fresh key and orphan every stored secret.
+fn key_file(data_dir: &std::path::Path) -> PathBuf {
+    let path = data_dir.join(KEY_FILE);
+    let legacy = data_dir.join(LEGACY_KEY_FILE);
+    if !path.exists() && legacy.exists() && std::fs::rename(&legacy, &path).is_err() {
+        // Rename can fail across odd mounts; a copy keeps the key either way.
+        if std::fs::copy(&legacy, &path).is_err() {
+            return legacy;
+        }
+    }
+    path
+}
 
 /// Where the encryption key lives. Keychain is the goal; a 0600 key file next
 /// to the profile store is the honest fallback (surfaced in the UI).
@@ -85,7 +104,21 @@ impl Crypto {
     /// generated; without it, missing means "not using the keychain".
     fn from_keyring(create: bool) -> AppResult<Self> {
         let entry = keyring_entry()?;
-        match entry.get_password() {
+        let found = match entry.get_password() {
+            // Pre-rename installs keep their key under the old service name:
+            // copy it across (the old item stays, harmlessly).
+            Err(keyring::Error::NoEntry) => match keyring::Entry::new(LEGACY_KEYRING_SERVICE, KEYRING_USER)
+                .and_then(|legacy| legacy.get_password())
+            {
+                Ok(b64) => {
+                    let _ = entry.set_password(&b64);
+                    Ok(b64)
+                }
+                Err(_) => Err(keyring::Error::NoEntry),
+            },
+            other => other,
+        };
+        match found {
             Ok(b64) => {
                 let bytes = B64
                     .decode(b64.trim())
@@ -117,12 +150,12 @@ impl Crypto {
                 keyring_entry()?
                     .set_password(&B64.encode(self.key))
                     .map_err(|e| AppError::Storage(format!("keychain write failed: {e}")))?;
-                let _ = std::fs::remove_file(data_dir.join("mongo-bongo.key"));
+                let _ = std::fs::remove_file(key_file(data_dir));
                 self.source = KeySource::Keychain;
                 write_pref(data_dir, "keychain")
             }
             KeySource::File => {
-                let path = data_dir.join("mongo-bongo.key");
+                let path = data_dir.join(KEY_FILE);
                 std::fs::write(&path, self.key)?;
                 #[cfg(unix)]
                 {
@@ -140,7 +173,7 @@ impl Crypto {
 
     fn from_file(data_dir: &PathBuf) -> AppResult<Self> {
         std::fs::create_dir_all(data_dir)?;
-        let path = data_dir.join("mongo-bongo.key");
+        let path = key_file(data_dir);
         if path.exists() {
             let bytes = std::fs::read(&path)?;
             let key: [u8; 32] = bytes
@@ -235,5 +268,19 @@ mod tests {
         tampered.pop();
         tampered.push(if enc.ends_with('A') { 'B' } else { 'A' });
         assert!(c.decrypt(&tampered).is_err());
+    }
+
+    #[test]
+    fn adopts_pre_rename_key_file() {
+        let dir = std::env::temp_dir().join(format!("db-crypto-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(LEGACY_KEY_FILE), [9u8; 32]).unwrap();
+        let c = Crypto::from_file(&dir).unwrap();
+        assert_eq!(c.key, [9u8; 32]);
+        assert!(dir.join(KEY_FILE).exists());
+        assert!(!dir.join(LEGACY_KEY_FILE).exists());
+        // Second start reads the new file, same key.
+        assert_eq!(Crypto::from_file(&dir).unwrap().key, [9u8; 32]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
