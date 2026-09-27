@@ -1277,6 +1277,31 @@ pub async fn ping_workspace(workspace: Option<String>, state: State<'_, AppState
     Ok(started.elapsed().as_millis() as u64)
 }
 
+/// Whether `.numbers` export can work here (macOS with Apple's Numbers app).
+#[tauri::command]
+pub fn numbers_available() -> bool {
+    crate::sheet::numbers_available()
+}
+
+/// Write rows the UI already holds (Studio results, overview tables) as a
+/// spreadsheet. Returns how many rows were written and whether the format's
+/// row limit cut the rest.
+#[tauri::command]
+pub async fn save_spreadsheet(
+    path: String,
+    format: String,
+    rows: Vec<Value>,
+    sheet: Option<String>,
+) -> AppResult<Value> {
+    let name = sheet.unwrap_or_else(|| "Export".into());
+    let (rows, truncated) = tokio::task::spawn_blocking(move || {
+        crate::sheet::write_rows(std::path::Path::new(&path), &format, &name, &rows)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))??;
+    Ok(json!({ "rows": rows, "truncated": truncated }))
+}
+
 /// Write a small text file the UI produced (e.g. an overview export) to a
 /// path the user picked in the save dialog.
 #[tauri::command]
@@ -1608,6 +1633,9 @@ pub struct CopyOutcome {
     pub documents: u64,
     pub indexes: u32,
     pub canceled: bool,
+    /// The export hit the file format's row limit (xlsx / numbers) and stopped.
+    #[serde(default)]
+    pub truncated: bool,
     pub exec_ms: u64,
 }
 
@@ -1747,6 +1775,7 @@ pub async fn copy_collection(
         documents,
         indexes,
         canceled,
+        truncated: false,
         exec_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -2757,8 +2786,8 @@ pub async fn export_collection(
         if !job.is_empty() {
             state.jobs.lock().unwrap().remove(&job);
         }
-        let (documents, canceled) = result?;
-        return Ok(CopyOutcome { documents, indexes: 0, canceled, exec_ms: started.elapsed().as_millis() as u64 });
+        let (documents, canceled, truncated) = result?;
+        return Ok(CopyOutcome { documents, indexes: 0, canceled, truncated, exec_ms: started.elapsed().as_millis() as u64 });
     }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
@@ -2779,6 +2808,10 @@ pub async fn export_collection(
         find = find.sort(sort);
     }
     let mut cursor = find.await?;
+
+    if crate::sheet::is_sheet_format(&format) {
+        return export_sheet(cursor, &app, &state, &collection, &format, &path, job_id, total, started).await;
+    }
 
     let file = std::fs::File::create(&path)
         .map_err(|e| AppError::Parse(format!("cannot write {path}: {e}")))?;
@@ -2940,6 +2973,116 @@ pub async fn export_collection(
         documents: count,
         indexes: 0,
         canceled,
+        truncated: false,
+        exec_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// `.xlsx` / `.numbers` export of a MongoDB cursor. Like CSV, the columns come
+/// from the first window of documents; later fields outside that set are
+/// dropped. Rows past the format's limit are cut (reported, not an error).
+#[allow(clippy::too_many_arguments)]
+async fn export_sheet(
+    mut cursor: mongodb::Cursor<Document>,
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    collection: &str,
+    format: &str,
+    path: &str,
+    job_id: Option<String>,
+    total: Option<u64>,
+    started: Instant,
+) -> AppResult<CopyOutcome> {
+    if format == "numbers" && !crate::sheet::numbers_available() {
+        return Err(AppError::Other(crate::sheet::NUMBERS_MISSING.into()));
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let job = job_id.unwrap_or_default();
+    if !job.is_empty() {
+        state.jobs.lock().unwrap().insert(job.clone(), cancel.clone());
+    }
+    let emit = |copied: u64| {
+        if !job.is_empty() {
+            let _ = app.emit("copy-progress", CopyProgress { job_id: job.clone(), copied, total });
+        }
+    };
+    let dest = std::path::PathBuf::from(path);
+    let staged = crate::sheet::staging_path(format, &dest);
+    let result: AppResult<(u64, bool, bool)> = async {
+        const SNIFF: usize = 1000;
+        let mut head: Vec<Value> = Vec::with_capacity(SNIFF);
+        while head.len() < SNIFF {
+            match cursor.try_next().await? {
+                Some(d) => head.push(doc_to_value(d)),
+                None => break,
+            }
+        }
+        let cols = crate::sheet::columns_of(head.iter());
+        let mut w = crate::sheet::SheetWriter::new(cols, collection, crate::sheet::max_rows(format))?;
+        let mut count = 0u64;
+        let mut canceled = false;
+        let mut full = false;
+        for v in &head {
+            if let Value::Object(m) = v {
+                if !w.push(m)? {
+                    full = true;
+                    break;
+                }
+                count += 1;
+            }
+        }
+        emit(count);
+        while !full {
+            if cancel.load(Ordering::Relaxed) {
+                canceled = true;
+                break;
+            }
+            match cursor.try_next().await? {
+                Some(d) => {
+                    if let Value::Object(m) = doc_to_value(d) {
+                        if !w.push(&m)? {
+                            break;
+                        }
+                        count += 1;
+                        if count % 500 == 0 {
+                            emit(count);
+                        }
+                    }
+                }
+                None => break,
+            }
+        }
+        let (written, truncated) = {
+            let staged = staged.clone();
+            tokio::task::spawn_blocking(move || w.save(&staged))
+                .await
+                .map_err(|e| AppError::Other(e.to_string()))??
+        };
+        emit(written);
+        Ok((written, truncated, canceled))
+    }
+    .await;
+    if !job.is_empty() {
+        state.jobs.lock().unwrap().remove(&job);
+    }
+    let (documents, truncated, canceled) = match result {
+        Ok(r) => r,
+        Err(e) => {
+            if staged != dest {
+                let _ = std::fs::remove_file(&staged);
+            }
+            return Err(e);
+        }
+    };
+    let fmt = format.to_string();
+    tokio::task::spawn_blocking(move || crate::sheet::finish(&fmt, &staged, &dest))
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))??;
+    Ok(CopyOutcome {
+        documents,
+        indexes: 0,
+        canceled,
+        truncated,
         exec_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -2994,7 +3137,7 @@ pub async fn import_documents(
             state.jobs.lock().unwrap().remove(&job);
         }
         let (documents, canceled) = result?;
-        return Ok(CopyOutcome { documents, indexes: 0, canceled, exec_ms: started.elapsed().as_millis() as u64 });
+        return Ok(CopyOutcome { documents, indexes: 0, canceled, truncated: false, exec_ms: started.elapsed().as_millis() as u64 });
     }
     let client = current_client(&state).await?;
     let coll = client.database(&database).collection::<Document>(&collection);
@@ -3015,6 +3158,7 @@ pub async fn import_documents(
         documents: count,
         indexes: 0,
         canceled,
+        truncated: false,
         exec_ms: started.elapsed().as_millis() as u64,
     })
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asLabel, asNumber, chartFromDocs, docsToCsv, relTime } from "./studio";
+import { asLabel, asNumber, chartFromDocs, chartKindsFor, docsToCsv, OTHER, relTime } from "./studio";
 import { compact, niceTicks } from "@/components/studio/Chart";
 import type { VizPlan } from "./ai";
 
@@ -41,7 +41,7 @@ describe("chartFromDocs", () => {
       title: undefined,
       metric: "total.n",
       labels: ["a", "c"],
-      values: [3, 9],
+      series: [{ name: "total.n", values: [3, 9], other: false }],
     });
   });
 
@@ -52,12 +52,92 @@ describe("chartFromDocs", () => {
       { day: "2026-03-02", revenue: 12.5 },
       { day: "2026-03-03", revenue: null },
     ];
-    expect(chartFromDocs(rows, sql, "line")).toMatchObject({ labels: ["2026-03-01", "2026-03-02"], values: [9007199254740993, 12.5] });
+    expect(chartFromDocs(rows, sql, "line")).toMatchObject({
+      labels: ["2026-03-01", "2026-03-02"],
+      series: [{ values: [9007199254740993, 12.5] }],
+    });
   });
 
   it("returns null when nothing is plottable", () => {
     expect(chartFromDocs([{ _id: "a" }], plan, "bar")).toBeNull();
     expect(chartFromDocs([{ _id: "a", total: { n: 1 } }], { ...plan, chart: null }, "bar")).toBeNull();
+  });
+});
+
+describe("multi-series charts", () => {
+  const long: VizPlan = {
+    kind: "sql",
+    explanation: "",
+    chart: { type: "stacked", labelField: "month", valueField: "n", seriesField: "status" },
+  };
+  const rows = [
+    { month: "2026-01", status: "paid", n: 5 },
+    { month: "2026-01", status: "refunded", n: 1 },
+    { month: "2026-02", status: "paid", n: 7 },
+    { month: "2026-02", status: "pending", n: 2 },
+  ];
+
+  it("pivots long rows into one series per value, gaps as null", () => {
+    expect(chartFromDocs(rows, long, "stacked")).toMatchObject({
+      labels: ["2026-01", "2026-02"],
+      series: [
+        { name: "paid", values: [5, 7] },
+        { name: "refunded", values: [1, null] },
+        { name: "pending", values: [null, 2] },
+      ],
+    });
+  });
+
+  it("reads wide rows as one series per value field", () => {
+    const wide: VizPlan = { kind: "sql", explanation: "", chart: { type: "line", labelField: "day", valueField: "a", valueFields: ["a", "b"] } };
+    const c = chartFromDocs([{ day: "d1", a: 1, b: 2 }, { day: "d2", a: 3, b: 4 }], wide, "line");
+    expect(c?.series.map((s) => [s.name, s.values])).toEqual([["a", [1, 3]], ["b", [2, 4]]]);
+  });
+
+  it("folds series past the palette into Other, keeping the biggest", () => {
+    const many = Array.from({ length: 12 }, (_, i) => ({ month: "m", status: `s${i}`, n: i + 1 }));
+    const c = chartFromDocs(many, long, "column")!;
+    expect(c.series).toHaveLength(8);
+    expect(c.series[7]).toMatchObject({ name: OTHER, other: true, values: [1 + 2 + 3 + 4 + 5] });
+    // Survivors keep first-appearance order (colour follows the entity).
+    expect(c.series.slice(0, 7).map((s) => s.name)).toEqual(["s5", "s6", "s7", "s8", "s9", "s10", "s11"]);
+  });
+
+  it("keeps a real category named Other", () => {
+    const c = chartFromDocs([{ month: "m", status: "Other", n: 1 }, { month: "m", status: "paid", n: 2 }], long, "column")!;
+    expect(c.series.map((s) => [s.name, s.other])).toEqual([["Other", false], ["paid", false]]);
+  });
+
+  it("offers only the forms the data fits", () => {
+    expect(chartKindsFor(rows, long)).toEqual(["stacked", "column", "bar", "line", "heatmap"]);
+    const single: VizPlan = { kind: "sql", explanation: "", chart: { type: "bar", labelField: "k", valueField: "v" } };
+    expect(chartKindsFor([{ k: "a", v: 1 }, { k: "b", v: 2 }], single)).toEqual(["bar", "column", "line", "area", "donut", "number"]);
+    expect(chartKindsFor([{ k: "a", v: -1 }, { k: "b", v: 2 }], single)).not.toContain("donut");
+  });
+});
+
+describe("donut and scatter", () => {
+  const plan: VizPlan = { kind: "sql", explanation: "", chart: { type: "donut", labelField: "k", valueField: "v" } };
+
+  it("keeps five slices and folds the tail into Other", () => {
+    const rows = [10, 9, 8, 7, 6, 5, 4].map((v, i) => ({ k: `c${i}`, v }));
+    const c = chartFromDocs(rows, plan, "donut")!;
+    expect(c.labels).toEqual(["c0", "c1", "c2", "c3", "c4", OTHER]);
+    expect(c.series[0].values).toEqual([10, 9, 8, 7, 6, 9]);
+  });
+
+  it("refuses negative shares", () => {
+    expect(chartFromDocs([{ k: "a", v: -1 }, { k: "b", v: 3 }], plan, "donut")).toBeNull();
+  });
+
+  it("plots numeric x/y points, three series at most", () => {
+    const sc: VizPlan = { kind: "sql", explanation: "", chart: { type: "scatter", labelField: "price", valueField: "sold", seriesField: "cat" } };
+    const rows = ["a", "b", "c", "d"].flatMap((cat, i) => [{ price: i, sold: i * 2, cat }, { price: i + 0.5, sold: i, cat }]);
+    const c = chartFromDocs(rows, sc, "scatter")!;
+    expect(c.points).toHaveLength(8);
+    expect(c.series).toHaveLength(3);
+    expect(c.series[2]).toMatchObject({ name: OTHER, other: true });
+    expect(chartKindsFor(rows, sc)).toContain("scatter");
   });
 });
 

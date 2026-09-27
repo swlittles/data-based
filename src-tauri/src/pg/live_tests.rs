@@ -190,11 +190,27 @@ async fn live_explorer_roundtrip() {
     ops::drop_table(&conn, "mb_it", "people_copy").await.unwrap();
     ops::drop_table(&conn, "mb_it", "adults").await.unwrap();
 
+    // spreadsheet export (xlsx always; numbers when opted in on a Mac with Numbers)
+    let mut sheet_formats = vec!["xlsx"];
+    if std::env::var("MB_NUMBERS").is_ok() && crate::sheet::numbers_available() {
+        sheet_formats.push("numbers");
+    }
+    for fmt in sheet_formats {
+        let path = std::env::temp_dir().join(format!("mb_it_export_{}.{fmt}", uuid::Uuid::new_v4()));
+        let cancel = AtomicBool::new(false);
+        let (n, canceled, truncated) =
+            ops::export(&conn, "mb_it", "people", "", "id", fmt, path.to_str().unwrap(), &cancel, &|_, _| {}).await.unwrap();
+        assert_eq!((n, canceled, truncated), (2, false, false), "{fmt}");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..2], b"PK", "{fmt} is a zip container");
+        let _ = std::fs::remove_file(&path);
+    }
+
     // export / import round trip
     for fmt in ["json", "ndjson", "csv"] {
         let path = format!("/tmp/mb_it_export.{fmt}");
         let cancel = AtomicBool::new(false);
-        let (n, _) = ops::export(&conn, "mb_it", "people", "", "id", fmt, &path, &cancel, &|_, _| {}).await.unwrap();
+        let (n, _, _) = ops::export(&conn, "mb_it", "people", "", "id", fmt, &path, &cancel, &|_, _| {}).await.unwrap();
         assert_eq!(n, 2);
         // Generated columns come along in the file and are skipped on insert.
         ops::run_shell(&conn, "mb_it", "CREATE TABLE mb_it.people_in (LIKE mb_it.people INCLUDING GENERATED)", false).await.unwrap();

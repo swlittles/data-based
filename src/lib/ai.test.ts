@@ -6,6 +6,7 @@ import {
   firstTable,
   formatUsage,
   maskSql,
+  normalizeChart,
   normalizePlan,
   normalizeSql,
   planToShell,
@@ -37,9 +38,9 @@ describe("normalizePlan", () => {
     expect(p.writeIntent).toBe(true);
   });
 
-  it("maps legacy pie charts to bars and keeps line/number", () => {
+  it("maps legacy pie charts to donuts and keeps line/number", () => {
     const chart = { labelField: "_id", valueField: "n" };
-    expect(normalizePlan({ ...base, chart: { ...chart, type: "pie" as never } }, false).chart?.type).toBe("bar");
+    expect(normalizePlan({ ...base, chart: { ...chart, type: "pie" as never } }, false).chart?.type).toBe("donut");
     expect(normalizePlan({ ...base, chart: { ...chart, type: "line" } }, false).chart?.type).toBe("line");
   });
 
@@ -138,7 +139,7 @@ describe("normalizePlan (postgres)", () => {
 
   it("maps chart kinds like MongoDB plans", () => {
     const chart = { labelField: "status", valueField: "n" };
-    expect(normalizePlan({ ...base, chart: { ...chart, type: "pie" as never } }, false, "postgres").chart?.type).toBe("bar");
+    expect(normalizePlan({ ...base, chart: { ...chart, type: "pie" as never } }, false, "postgres").chart?.type).toBe("donut");
   });
 
   it("renders SQL for the shell", () => {
@@ -182,5 +183,34 @@ describe("formatUsage", () => {
   it("formats tokens and cost", () => {
     expect(formatUsage({ input: 0, output: 0, total: 1234, cost: 0.0031 })).toBe("1.2k tokens · $0.0031");
     expect(formatUsage({ input: 0, output: 0, total: 80, cost: 0 })).toBe("80 tokens");
+  });
+});
+
+describe("normalizeChart", () => {
+  it("keeps new chart types and series fields", () => {
+    expect(normalizeChart({ type: "stacked", labelField: "m", valueField: "n", seriesField: "s" })).toEqual({
+      type: "stacked",
+      labelField: "m",
+      valueField: "n",
+      seriesField: "s",
+      title: undefined,
+    });
+    expect(normalizeChart({ type: "heatmap" as never, labelField: "hour", valueField: "n", seriesField: "weekday" })?.type).toBe("heatmap");
+  });
+
+  it("maps aliases and falls back to bars", () => {
+    expect(normalizeChart({ type: "pie" as never, labelField: "k", valueField: "v" })?.type).toBe("donut");
+    expect(normalizeChart({ type: "sparkles" as never, labelField: "k", valueField: "v" })?.type).toBe("bar");
+  });
+
+  it("downgrades series forms without a second dimension", () => {
+    expect(normalizeChart({ type: "stacked", labelField: "k", valueField: "v" })?.type).toBe("bar");
+    expect(normalizeChart({ type: "heatmap", labelField: "k", valueField: "v" })?.type).toBe("column");
+  });
+
+  it("drops a series field equal to the label and needs a value", () => {
+    expect(normalizeChart({ type: "line", labelField: "k", valueField: "v", seriesField: "k" })?.seriesField).toBeUndefined();
+    expect(normalizeChart({ type: "bar", labelField: "k", valueField: "" })).toBeNull();
+    expect(normalizeChart({ type: "line", labelField: "d", valueField: "", valueFields: ["a", "b"] })).toMatchObject({ valueField: "a", valueFields: ["a", "b"] });
   });
 });

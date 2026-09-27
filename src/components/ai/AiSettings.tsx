@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Check, ChevronDown, ExternalLink, Loader2, RefreshCw, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { api, errMsg, type AiKeyInfo, type AiModel } from "@/lib/api";
 import { openExternal } from "@/lib/links";
-import { AI_MODE_META, DEFAULT_MODEL, useAi, type AiMode } from "@/stores/ai";
+import { AI_MODE_META, DEFAULT_MODEL, MODEL_ID_RE, useAi, type AiMode } from "@/stores/ai";
 import { cn } from "@/lib/utils";
 
 const KEYS_URL = "https://openrouter.ai/keys";
@@ -19,9 +19,9 @@ function price(m: AiModel): string {
   return `$${f(m.promptPrice)} / $${f(m.completionPrice)}`;
 }
 
-/** Searchable OpenRouter model list; any typed id is accepted too. */
-function ModelPicker() {
-  const { model, setModel, loadModels, models } = useAi();
+/** Searchable OpenRouter model list; picking one fills and saves the field. */
+function ModelPicker({ onPick }: { onPick: (id: string) => void }) {
+  const { model, loadModels, models } = useAi();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
@@ -46,7 +46,7 @@ function ModelPicker() {
   const typedIsNew = typed && !(models ?? []).some((m) => m.id === typed);
 
   const pick = (id: string) => {
-    setModel(id);
+    onPick(id);
     setOpen(false);
     setQuery("");
   };
@@ -60,8 +60,8 @@ function ModelPicker() {
       }}
     >
       <PopoverTrigger asChild>
-        <button className="btn sm max-w-[260px]" aria-label="Model">
-          <span className="truncate font-mono text-[11.5px]">{model}</span>
+        <button className="btn sm" aria-label="Browse OpenRouter models">
+          Browse
           <ChevronDown style={{ width: 12, height: 12, opacity: 0.7 }} />
         </button>
       </PopoverTrigger>
@@ -116,6 +116,70 @@ function ModelPicker() {
         <div className="border-t border-line px-3 py-2 text-[10.5px] text-text-3">Prices are USD per million input / output tokens.</div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * The model to use: paste an exact OpenRouter id and save it, or leave it
+ * blank for openrouter/auto. A saved id OpenRouter rejects falls back to auto
+ * per request (see chat() in lib/ai.ts), so a typo never breaks AI features.
+ */
+function ModelField() {
+  const { model, setModel, models } = useAi();
+  const saved = model === DEFAULT_MODEL ? "" : model;
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => setDraft(saved), [saved]);
+
+  const value = draft.trim();
+  const valid = value === "" || value === DEFAULT_MODEL || MODEL_ID_RE.test(value);
+  const dirty = value !== saved;
+
+  const save = (id: string) => {
+    const next = id.trim();
+    if (next && next !== DEFAULT_MODEL && !MODEL_ID_RE.test(next)) {
+      toast.error("Model ids look like vendor/model, e.g. anthropic/claude-sonnet-5");
+      return;
+    }
+    setModel(next);
+    setDraft(next === DEFAULT_MODEL ? "" : next);
+    if (!next || next === DEFAULT_MODEL) {
+      toast.success(`Using ${DEFAULT_MODEL}`);
+    } else if (models && !models.some((m) => m.id === next)) {
+      toast.warning(`Saved "${next}" - it isn't in OpenRouter's current list, so requests fall back to ${DEFAULT_MODEL} if it's unavailable.`);
+    } else {
+      toast.success(`Using ${next}`);
+    }
+  };
+
+  return (
+    <form
+      className="flex items-center gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (valid) save(value);
+      }}
+    >
+      <Input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={`${DEFAULT_MODEL} (automatic)`}
+        className={cn("h-8 w-64 font-mono text-[11.5px]", !valid && "border-danger")}
+        autoComplete="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        aria-label="OpenRouter model id"
+        aria-invalid={!valid}
+      />
+      <Button size="sm" type="submit" disabled={!dirty || !valid}>
+        Save
+      </Button>
+      <ModelPicker onPick={save} />
+      {saved && (
+        <Button variant="outline" size="sm" type="button" onClick={() => save("")}>
+          Use auto
+        </Button>
+      )}
+    </form>
   );
 }
 
@@ -230,8 +294,16 @@ export function AiSettings() {
             </form>
           )}
         </Row>
-        <Row label="Model" hint="Any model OpenRouter offers. openrouter/auto picks one per request.">
-          <ModelPicker />
+        <Row
+          label="Model"
+          hint={
+            <>
+              Paste an exact OpenRouter model id (vendor/model) and save, or browse the list. Blank uses {DEFAULT_MODEL},
+              which picks one per request - and is used automatically if the saved model is unavailable.
+            </>
+          }
+        >
+          <ModelField />
         </Row>
         <Row label="Default mode" hint={AI_MODE_META[mode].hint}>
           <div className="seg" role="radiogroup" aria-label="Default AI mode">

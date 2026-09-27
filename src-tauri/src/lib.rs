@@ -5,6 +5,7 @@ mod error;
 mod pg;
 mod portable;
 mod profiles;
+mod sheet;
 mod shell;
 mod ssh;
 
@@ -112,6 +113,8 @@ pub fn run() {
             commands::db_overview,
             commands::ping_workspace,
             commands::save_text_file,
+            commands::numbers_available,
+            commands::save_spreadsheet,
             commands::current_ops,
             commands::kill_op,
             commands::profiler_status,

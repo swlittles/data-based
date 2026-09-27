@@ -4,6 +4,11 @@
    Themes set ONLY the variables in the block below; no theme
    ever touches component CSS. Density is a separate axis.
 
+   Chart series (--cat-1..8): the validated categorical palette -
+   light steps on light themes, dark steps on dark ones. The ORDER
+   is the colour-blind-safety mechanism: never reorder or cycle.
+   Re-validate against a new theme's --panel before shipping it.
+
    Add a theme:
      [data-theme="yours"]{ ...every key from the contract... }
    Register it in the picker with:  <button data-t="yours">
@@ -48,6 +53,7 @@
   --accent-soft:rgba(0,237,100,.12); --accent-line:rgba(0,237,100,.32); --accent-glow:rgba(0,237,100,.24);
   --ok:#31D07B; --warn:#E9B44C; --danger:#F0705F;
   --s-punc:#5A6B64; --s-key:#CBD8D2; --s-str:#7FD8A0; --s-num:#C3A7F1; --s-bool:#E9B44C; --s-date:#6BC5E8; --s-oid:#00ED64;
+  --cat-1:#3987e5; --cat-2:#d95926; --cat-3:#199e70; --cat-4:#c98500; --cat-5:#d55181; --cat-6:#008300; --cat-7:#9085e9; --cat-8:#e66767;
   --shadow:0 24px 60px -24px rgba(0,0,0,.75); --wm:.055; --desk:#08090A;
 }
 
@@ -61,6 +67,7 @@
   --accent-soft:rgba(0,104,74,.09); --accent-line:rgba(0,104,74,.3); --accent-glow:rgba(0,104,74,.16);
   --ok:#0E8A54; --warn:#9A6B12; --danger:#B8382F;
   --s-punc:#9FB0A6; --s-key:#28453A; --s-str:#0F7048; --s-num:#6C3FA8; --s-bool:#96650F; --s-date:#1A6A8C; --s-oid:#00684A;
+  --cat-1:#2a78d6; --cat-2:#eb6834; --cat-3:#1baf7a; --cat-4:#eda100; --cat-5:#e87ba4; --cat-6:#008300; --cat-7:#4a3aa7; --cat-8:#e34948;
   --shadow:0 22px 48px -26px rgba(20,50,38,.3); --wm:.075; --desk:#DDE4DF;
 }
 
@@ -74,6 +81,7 @@
   --accent-soft:rgba(180,82,122,.1); --accent-line:rgba(180,82,122,.3); --accent-glow:rgba(180,82,122,.18);
   --ok:#5C8C5A; --warn:#C08A2E; --danger:#C24B45;
   --s-punc:#B5A29B; --s-key:#5C4750; --s-str:#4E7A56; --s-num:#8A5AA8; --s-bool:#B07A22; --s-date:#3D7590; --s-oid:#B4527A;
+  --cat-1:#2a78d6; --cat-2:#eb6834; --cat-3:#1baf7a; --cat-4:#eda100; --cat-5:#e87ba4; --cat-6:#008300; --cat-7:#4a3aa7; --cat-8:#e34948;
   --shadow:0 22px 50px -26px rgba(90,60,50,.35); --wm:.07; --desk:#E7DCD2;
   --display:'Instrument Serif',Georgia,serif;
 }
@@ -88,6 +96,7 @@
   --accent-soft:rgba(244,154,193,.13); --accent-line:rgba(244,154,193,.34); --accent-glow:rgba(244,154,193,.26);
   --ok:#9DC49A; --warn:#EBB765; --danger:#F0796F;
   --s-punc:#6F5867; --s-key:#E3D0DC; --s-str:#A8D3A4; --s-num:#D3A6F2; --s-bool:#EBB765; --s-date:#8CC8E8; --s-oid:#F49AC1;
+  --cat-1:#3987e5; --cat-2:#d95926; --cat-3:#199e70; --cat-4:#c98500; --cat-5:#d55181; --cat-6:#008300; --cat-7:#9085e9; --cat-8:#e66767;
   --shadow:0 26px 60px -24px rgba(0,0,0,.8); --wm:.07; --desk:#100A10;
   --display:'Instrument Serif',Georgia,serif;
 }
@@ -102,6 +111,7 @@
   --accent-soft:rgba(155,140,255,.14); --accent-line:rgba(155,140,255,.34); --accent-glow:rgba(155,140,255,.28);
   --ok:#57D9A3; --warn:#F0C05A; --danger:#FF7A7A;
   --s-punc:#5D6291; --s-key:#CDD1F5; --s-str:#7BE0C0; --s-num:#F0A6D0; --s-bool:#F0C05A; --s-date:#7FC4FF; --s-oid:#9B8CFF;
+  --cat-1:#3987e5; --cat-2:#d95926; --cat-3:#199e70; --cat-4:#c98500; --cat-5:#d55181; --cat-6:#008300; --cat-7:#9085e9; --cat-8:#e66767;
   --shadow:0 26px 64px -24px rgba(0,0,0,.8); --wm:.075; --desk:#070714;
 }
 
@@ -115,6 +125,7 @@
   --accent-soft:rgba(255,255,255,.1); --accent-line:rgba(255,255,255,.28); --accent-glow:rgba(255,255,255,.14);
   --ok:#B9C4BB; --warn:#D0C39C; --danger:#E0A39C;
   --s-punc:#5E5E66; --s-key:#DADADE; --s-str:#B6C6BA; --s-num:#C4BBD6; --s-bool:#D0C39C; --s-date:#A9BCC8; --s-oid:#F2F2F3;
+  --cat-1:#3987e5; --cat-2:#d95926; --cat-3:#199e70; --cat-4:#c98500; --cat-5:#d55181; --cat-6:#008300; --cat-7:#9085e9; --cat-8:#e66767;
   --shadow:0 24px 56px -26px rgba(0,0,0,.7); --wm:.06; --desk:#0A0A0B;
 }
 
@@ -128,6 +139,7 @@
   --accent-soft:rgba(59,255,136,.18); --accent-line:rgba(59,255,136,.7); --accent-glow:rgba(59,255,136,.35);
   --ok:#3BFF88; --warn:#FFD24A; --danger:#FF7A6A;
   --s-punc:#9A9A9A; --s-key:#FFFFFF; --s-str:#8FFFC0; --s-num:#D8B4FF; --s-bool:#FFD24A; --s-date:#8FD8FF; --s-oid:#3BFF88;
+  --cat-1:#3987e5; --cat-2:#d95926; --cat-3:#199e70; --cat-4:#c98500; --cat-5:#d55181; --cat-6:#008300; --cat-7:#9085e9; --cat-8:#e66767;
   --shadow:0 0 0 1px rgba(255,255,255,.4); --wm:.11; --desk:#000000;
 }
 
@@ -141,6 +153,7 @@
   --accent-soft:rgba(181,137,0,.13); --accent-line:rgba(181,137,0,.4); --accent-glow:rgba(181,137,0,.2);
   --ok:#859900; --warn:#CB4B16; --danger:#DC322F;
   --s-punc:#93A1A1; --s-key:#073642; --s-str:#2AA198; --s-num:#6C71C4; --s-bool:#CB4B16; --s-date:#268BD2; --s-oid:#B58900;
+  --cat-1:#2a78d6; --cat-2:#eb6834; --cat-3:#1baf7a; --cat-4:#eda100; --cat-5:#e87ba4; --cat-6:#008300; --cat-7:#4a3aa7; --cat-8:#e34948;
   --shadow:0 20px 44px -26px rgba(88,110,117,.4); --wm:.09; --desk:#E4D9BC;
 }
 
@@ -155,6 +168,7 @@
     --accent-soft:rgba(0,237,100,.12); --accent-line:rgba(0,237,100,.32); --accent-glow:rgba(0,237,100,.24);
     --ok:#31D07B; --warn:#E9B44C; --danger:#F0705F;
     --s-punc:#5A6B64; --s-key:#CBD8D2; --s-str:#7FD8A0; --s-num:#C3A7F1; --s-bool:#E9B44C; --s-date:#6BC5E8; --s-oid:#00ED64;
+    --cat-1:#3987e5; --cat-2:#d95926; --cat-3:#199e70; --cat-4:#c98500; --cat-5:#d55181; --cat-6:#008300; --cat-7:#9085e9; --cat-8:#e66767;
     --shadow:0 24px 60px -24px rgba(0,0,0,.75); --wm:.055; --desk:#08090A;
   }
 }
@@ -168,6 +182,7 @@
     --accent-soft:rgba(0,104,74,.09); --accent-line:rgba(0,104,74,.3); --accent-glow:rgba(0,104,74,.16);
     --ok:#0E8A54; --warn:#9A6B12; --danger:#B8382F;
     --s-punc:#9FB0A6; --s-key:#28453A; --s-str:#0F7048; --s-num:#6C3FA8; --s-bool:#96650F; --s-date:#1A6A8C; --s-oid:#00684A;
+    --cat-1:#2a78d6; --cat-2:#eb6834; --cat-3:#1baf7a; --cat-4:#eda100; --cat-5:#e87ba4; --cat-6:#008300; --cat-7:#4a3aa7; --cat-8:#e34948;
     --shadow:0 22px 48px -26px rgba(20,50,38,.3); --wm:.075; --desk:#DDE4DF;
   }
 }

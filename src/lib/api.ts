@@ -261,6 +261,8 @@ export interface CopyOutcome {
   documents: number;
   indexes: number;
   canceled: boolean;
+  /** An .xlsx / .numbers export hit the format's row limit and stopped there. */
+  truncated?: boolean;
   execMs: number;
 }
 
@@ -681,7 +683,7 @@ export const api = {
     collection: string;
     filter: string;
     sort: string;
-    format: "json" | "csv" | "ndjson" | "bson";
+    format: "json" | "csv" | "ndjson" | "bson" | "xlsx" | "numbers";
     path: string;
     /** Enables `copy-progress` events and cancellation via cancelJob. */
     jobId?: string;
@@ -693,6 +695,11 @@ export const api = {
   dbOverview: (database: string) => invoke<DbOverview>("db_overview", { database }),
   pingWorkspace: (workspace?: string) => invoke<number>("ping_workspace", { workspace }),
   saveTextFile: (path: string, content: string) => invoke<void>("save_text_file", { path, content }),
+  /** macOS with Apple's Numbers app installed - .numbers export is possible. */
+  numbersAvailable: () => invoke<boolean>("numbers_available"),
+  /** Write rows the UI holds as .xlsx / .numbers (typed cells, frozen header). */
+  saveSpreadsheet: (path: string, format: "xlsx" | "numbers", rows: Doc[], sheet?: string) =>
+    invoke<{ rows: number; truncated: boolean }>("save_spreadsheet", { path, format, rows, sheet }),
 
   // ops panel
   currentOps: () => invoke<Doc[]>("current_ops"),
