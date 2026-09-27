@@ -26,6 +26,8 @@ interface CodeEditorProps {
    * per-model view state (scroll/cursor) from sharing one anonymous slot.
    */
   path?: string;
+  /** Monaco language id: "mongodb" (default), "pgsql" or "json". */
+  language?: string;
 }
 
 export function CodeEditor({
@@ -40,6 +42,7 @@ export function CodeEditor({
   autoFocus = false,
   bare = false,
   path,
+  language = "mongodb",
 }: CodeEditorProps) {
   const { theme, resolved } = useTheme();
   const runRef = useRef(onRun);
@@ -100,7 +103,7 @@ export function CodeEditor({
       <Editor
         height={height === "100%" ? fillPx! : height}
         path={path}
-        language="mongodb"
+        language={language}
         theme="mongo-bongo"
         value={value}
         onChange={(v) => onChange?.(v ?? "")}

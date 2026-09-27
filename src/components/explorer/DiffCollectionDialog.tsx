@@ -22,15 +22,20 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useConnections } from "@/stores/connections";
+import { QueryInput } from "@/components/explorer/QueryInput";
+import { useConnections, useEngine } from "@/stores/connections";
 import {
   api,
   errMsg,
+  writeGuard,
+  type Doc,
   type DiffEntry,
   type DiffOutcome,
   type DiffProgress,
 } from "@/lib/api";
+import { leafText } from "@/lib/bson";
 import { diffDocs, formatId, previewValue } from "@/lib/diff";
+import { terms } from "@/lib/engine";
 import { cn } from "@/lib/utils";
 
 interface DiffCollectionDialogProps {
@@ -43,17 +48,27 @@ interface DiffCollectionDialogProps {
 
 const idKey = (id: unknown) => JSON.stringify(id);
 
+/** PostgreSQL diff ids are primary-key objects: `id 7` / `order_id 1 · line 2`. */
+const pkText = (id: unknown) =>
+  id && typeof id === "object"
+    ? Object.entries(id as Doc)
+        .map(([k, v]) => `${k} ${leafText(v)}`)
+        .join(" · ")
+    : leafText(id);
+
 /** One row in a category table: checkbox, id, optional expandable field diff. */
 function EntryRow({
   entry,
   checked,
   onCheck,
   expandable,
+  pg,
 }: {
   entry: DiffEntry;
   checked: boolean;
   onCheck: (v: boolean) => void;
   expandable: boolean;
+  pg: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const fields = useMemo(
@@ -82,10 +97,10 @@ function EntryRow({
               ) : (
                 <ChevronRight className="h-3 w-3 shrink-0 text-text-3" />
               )}
-              <span className="oi truncate">{formatId(entry.id)}</span>
+              <span className="oi truncate">{pg ? pkText(entry.id) : formatId(entry.id)}</span>
             </button>
           ) : (
-            <span className="oi truncate">{formatId(entry.id)}</span>
+            <span className="oi truncate">{pg ? pkText(entry.id) : formatId(entry.id)}</span>
           )}
         </td>
       </tr>
@@ -96,7 +111,7 @@ function EntryRow({
               <table className="tbl">
                 <thead>
                   <tr>
-                    <th>Field</th>
+                    <th>{pg ? "Column" : "Field"}</th>
                     <th>Source</th>
                     <th>Target</th>
                   </tr>
@@ -127,8 +142,16 @@ export function DiffCollectionDialog({
 }: DiffCollectionDialogProps) {
   const filterId = useId();
 
-  const workspaces = useConnections((s) => s.workspaces);
+  const allWorkspaces = useConnections((s) => s.workspaces);
   const activeId = useConnections((s) => s.activeId);
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  // Only same-engine workspaces can be compared (the backend rejects
+  // MongoDB <-> PostgreSQL).
+  const workspaces = allWorkspaces.filter(
+    (w) => (w.info.engine ?? writeGuard.engine(w.info.id)) === engine
+  );
 
   // -------------------------------------------------- setup state
   const [targetWs, setTargetWs] = useState("");
@@ -196,8 +219,40 @@ export function DiffCollectionDialog({
     };
   }, [open, targetWs, targetDb]);
 
+  // PostgreSQL rows are matched by primary key - check both sides have one
+  // (and the same one) before running.
+  const [sourcePk, setSourcePk] = useState<string[] | null>(null);
+  const [targetPk, setTargetPk] = useState<string[] | null>(null);
+  useEffect(() => {
+    setSourcePk(null);
+    if (!open || !pg || !source) return;
+    let stale = false;
+    api
+      .tableMeta(database, source)
+      .then((m) => !stale && setSourcePk(m.primaryKey))
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [open, pg, database, source]);
+  useEffect(() => {
+    setTargetPk(null);
+    if (!open || !pg || !targetWs || !targetDb || !targetColl) return;
+    let stale = false;
+    api
+      .tableMeta(targetDb, targetColl, targetWs)
+      .then((m) => !stale && setTargetPk(m.primaryKey))
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [open, pg, targetWs, targetDb, targetColl]);
+  const noPk = pg && ((sourcePk !== null && sourcePk.length === 0) || (targetPk !== null && targetPk.length === 0));
+  const pkMismatch =
+    pg && !noPk && sourcePk !== null && targetPk !== null && sourcePk.join(",") !== targetPk.join(",");
+
   const sameTarget = targetWs === activeId && targetDb === database && targetColl === source;
-  const canRun = !busy && !!targetWs && !!targetDb && !!targetColl && !sameTarget;
+  const canRun = !busy && !!targetWs && !!targetDb && !!targetColl && !sameTarget && !noPk && !pkMismatch;
 
   const runDiff = async () => {
     if (!canRun) return;
@@ -325,6 +380,7 @@ export function DiffCollectionDialog({
                       checked={selected.has(k)}
                       onCheck={(v) => setSelected(toggle(selected, k, v))}
                       expandable={expandable}
+                      pg={pg}
                     />
                   );
                 })}
@@ -348,9 +404,11 @@ export function DiffCollectionDialog({
     <Dialog open={open} onOpenChange={(o) => !busy && !syncing && onOpenChange(o)}>
       <DialogContent className="max-w-[820px]">
         <DialogHeader>
-          <DialogTitle>Diff collection</DialogTitle>
+          <DialogTitle>Diff {t.coll}</DialogTitle>
           <DialogDescription>
-            {database}.{source} · compare by _id, then sync selected documents
+            {pg
+              ? `${database}.${source} · rows matched by primary key, then sync selected rows`
+              : `${database}.${source} · compare by _id, then sync selected documents`}
           </DialogDescription>
         </DialogHeader>
 
@@ -378,10 +436,10 @@ export function DiffCollectionDialog({
               </Select>
             </div>
             <div className="fld">
-              <label>Database</label>
+              <label>{t.Db}</label>
               <Select value={targetDb} onValueChange={setTargetDb} disabled={busy}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Database" />
+                  <SelectValue placeholder={t.Db} />
                 </SelectTrigger>
                 <SelectContent>
                   {dbNames.map((n) => (
@@ -393,10 +451,10 @@ export function DiffCollectionDialog({
               </Select>
             </div>
             <div className="fld">
-              <label>Collection</label>
+              <label>{t.Coll}</label>
               <Select value={targetColl} onValueChange={setTargetColl} disabled={busy}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Collection" />
+                  <SelectValue placeholder={t.Coll} />
                 </SelectTrigger>
                 <SelectContent>
                   {collNames.map((n) => (
@@ -409,24 +467,53 @@ export function DiffCollectionDialog({
             </div>
           </div>
 
-          <div className="fld">
-            <label htmlFor={filterId}>Filter</label>
-            <input
-              id={filterId}
-              className="in"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder='{ status: "active" }'
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <div className="hint">Optional, applied to both sides.</div>
-          </div>
+          {pg ? (
+            <div className="fld">
+              <label>WHERE</label>
+              <QueryInput
+                value={filter}
+                onChange={(v) => !busy && setFilter(v)}
+                placeholder="updated_at > now() - interval '1 day'"
+                language="pgsql"
+                ariaLabel="WHERE condition"
+                maxLines={4}
+              />
+              <div className="hint">
+                Optional SQL condition, applied to both sides. Tables without a primary key can't be diffed.
+              </div>
+            </div>
+          ) : (
+            <div className="fld">
+              <label htmlFor={filterId}>Filter</label>
+              <input
+                id={filterId}
+                className="in"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder='{ status: "active" }'
+                disabled={busy}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <div className="hint">Optional, applied to both sides.</div>
+            </div>
+          )}
 
           {sameTarget && (
             <div className="notice dgr">
-              Pick a different connection, database, or collection to compare against.
+              Pick a different connection, {t.db}, or {t.coll} to compare against.
+            </div>
+          )}
+          {noPk && (
+            <div className="notice dgr">
+              {sourcePk?.length === 0 ? `${source} has` : `${targetColl} has`} no primary key - rows can only be
+              matched by primary key, so this table can't be diffed.
+            </div>
+          )}
+          {pkMismatch && (
+            <div className="notice dgr">
+              The primary keys differ ({sourcePk?.join(", ")} vs {targetPk?.join(", ")}) - both tables need the same
+              primary key to be compared.
             </div>
           )}
 
@@ -437,7 +524,7 @@ export function DiffCollectionDialog({
                 <div className="mono tabular-nums">
                   {progress.phase === "source" ? "Scanning source" : "Scanning target"} -{" "}
                   {progress.processed.toLocaleString()}
-                  {progress.total ? ` / ${progress.total.toLocaleString()}` : ""} documents
+                  {progress.total ? ` / ${progress.total.toLocaleString()}` : ""} {t.docs}
                 </div>
                 <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-panel-2">
                   {pct === null ? (
@@ -497,7 +584,7 @@ export function DiffCollectionDialog({
                     selChanged,
                     setSelChanged,
                     true,
-                    "No changed documents.",
+                    `No changed ${t.docs}.`,
                     <Button
                       size="sm"
                       variant="outline"
@@ -505,12 +592,12 @@ export function DiffCollectionDialog({
                       onClick={() =>
                         setConfirm({
                           title: "Overwrite on target?",
-                          description: `This replaces ${selChanged.size} document${selChanged.size === 1 ? "" : "s"} in ${targetName} / ${targetDb}.${targetColl} with the source version. This cannot be undone.`,
+                          description: `This replaces ${selChanged.size} ${selChanged.size === 1 ? t.doc : t.docs} in ${targetName} / ${targetDb}.${targetColl} with the source version. This cannot be undone.`,
                           confirmLabel: "Overwrite",
                           destructive: true,
                           run: () =>
                             runSync("copy", result.changedDocs, selChanged, (n) =>
-                              `Overwrote ${n} document${n === 1 ? "" : "s"} on the target`
+                              `Overwrote ${n} ${n === 1 ? t.doc : t.docs} on the target`
                             ),
                         })
                       }
@@ -533,7 +620,7 @@ export function DiffCollectionDialog({
                       disabled={selMissing.size === 0 || syncing}
                       onClick={() =>
                         void runSync("copy", result.onlyInSourceDocs, selMissing, (n) =>
-                          `Copied ${n} document${n === 1 ? "" : "s"} to the target`
+                          `Copied ${n} ${n === 1 ? t.doc : t.docs} to the target`
                         )
                       }
                     >
@@ -550,7 +637,7 @@ export function DiffCollectionDialog({
                     selExtra,
                     setSelExtra,
                     false,
-                    "No extra documents on the target.",
+                    `No extra ${t.docs} on the target.`,
                     <Button
                       size="sm"
                       variant="destructive"
@@ -558,12 +645,12 @@ export function DiffCollectionDialog({
                       onClick={() =>
                         setConfirm({
                           title: "Delete from target?",
-                          description: `This permanently deletes ${selExtra.size} document${selExtra.size === 1 ? "" : "s"} from ${targetName} / ${targetDb}.${targetColl}. This cannot be undone.`,
+                          description: `This permanently deletes ${selExtra.size} ${selExtra.size === 1 ? t.doc : t.docs} from ${targetName} / ${targetDb}.${targetColl}. This cannot be undone.`,
                           confirmLabel: "Delete",
                           destructive: true,
                           run: () =>
                             runSync("delete", result.onlyInTargetDocs, selExtra, (n) =>
-                              `Deleted ${n} document${n === 1 ? "" : "s"} from the target`
+                              `Deleted ${n} ${n === 1 ? t.doc : t.docs} from the target`
                             ),
                         })
                       }

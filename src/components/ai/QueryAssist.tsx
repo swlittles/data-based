@@ -10,8 +10,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { api, errMsg } from "@/lib/api";
-import { ASSIST_ACTIONS, assistQuery, formatUsage, type AssistResult } from "@/lib/ai";
+import { assistActions, assistQuery, formatUsage, shortType, type AssistResult } from "@/lib/ai";
 import { AI_NOT_READY, useAi } from "@/stores/ai";
+import { useEngine } from "@/stores/connections";
 import { useUi } from "@/stores/ui";
 
 export interface AssistState {
@@ -21,8 +22,9 @@ export interface AssistState {
 }
 
 /**
- * AI help for a mongosh statement: a toolbar menu plus the result panel. The
- * owner keeps the state so the menu and panel can live in different places.
+ * AI help for a mongosh statement (or SQL in a PostgreSQL workspace): a
+ * toolbar menu plus the result panel. The owner keeps the state so the menu
+ * and panel can live in different places.
  */
 export function useQueryAssist(args: {
   database: string;
@@ -31,6 +33,7 @@ export function useQueryAssist(args: {
   getError: () => string | null;
 }) {
   const configured = useAi((s) => s.configured);
+  const engine = useEngine();
   const ui = useUi((s) => s.set);
   const [state, setState] = useState<AssistState | null>(null);
 
@@ -46,8 +49,18 @@ export function useQueryAssist(args: {
     }
     setState({ label, busy: true, result: null });
     try {
-      const fields = await api.collectionFields(args.database, args.collection, 200).catch(() => []);
+      // Postgres: typed columns (and the key) say more than bare names.
+      const fields =
+        engine === "postgres"
+          ? await api
+              .tableMeta(args.database, args.collection)
+              .then((m) =>
+                m.columns.map((c) => `${c.name} ${shortType(c.dataType)}${m.primaryKey.includes(c.name) ? " PK" : ""}`)
+              )
+              .catch(() => [])
+          : await api.collectionFields(args.database, args.collection, 200).catch(() => []);
       const result = await assistQuery({
+        engine,
         query,
         instruction,
         database: args.database,
@@ -67,6 +80,7 @@ export function useQueryAssist(args: {
 
 export function AssistMenu({ busy, onPick }: { busy: boolean; onPick: (label: string, instruction: string) => void }) {
   const [custom, setCustom] = useState("");
+  const engine = useEngine();
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
@@ -76,8 +90,10 @@ export function AssistMenu({ busy, onPick }: { busy: boolean; onPick: (label: st
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-80">
-        <DropdownMenuLabel className="text-xs">Ask AI about this statement</DropdownMenuLabel>
-        {ASSIST_ACTIONS.map((a) => (
+        <DropdownMenuLabel className="text-xs">
+          Ask AI about this {engine === "postgres" ? "SQL" : "statement"}
+        </DropdownMenuLabel>
+        {assistActions(engine).map((a) => (
           <DropdownMenuItem key={a.id} className="gap-2.5 py-2" onClick={() => onPick(a.label, a.instruction)}>
             <span className="w-28 text-[12px] text-text">{a.label}</span>
             <span className="text-[11px] text-text-3">{a.hint}</span>

@@ -26,25 +26,29 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Blank } from "@/components/layout/Blank";
 import { ValueTree } from "@/components/explorer/ValueTree";
 import { AssistantTurn, UserBubble } from "@/components/studio/StudioTurn";
-import { api, errMsg, type Doc } from "@/lib/api";
+import { api, errMsg, type Doc, type TableMeta } from "@/lib/api";
 import {
   addUsage,
   findLimit,
   formatUsage,
   generateVizPlan,
   planToShell,
+  RESULT_LIMIT,
   selectCollections,
   suggestPrompts,
   ZERO_USAGE,
   type DbSchema,
+  type SqlSchema,
+  type SqlTable,
   type TokenUsage,
   type VizHistoryItem,
 } from "@/lib/ai";
+import { sqlIdent, terms } from "@/lib/engine";
 import { relTime } from "@/lib/studio";
 import { AI_MODE_META, useAi, type AiMode } from "@/stores/ai";
 import { useChat, WHOLE_DB, type ChatSession, type ChatTurn } from "@/stores/chat";
 import { sameInsight, useInsights, type Insight } from "@/stores/insights";
-import { useConnections } from "@/stores/connections";
+import { useConnections, useEngine } from "@/stores/connections";
 import { useExplorer } from "@/stores/explorer";
 import { useSettings } from "@/stores/settings";
 import { useUi } from "@/stores/ui";
@@ -54,6 +58,11 @@ const STARTERS_SINGLE = [
   "Count documents grouped by status",
   "Documents created per day over the last 30 days",
   "Top 10 most recent documents",
+];
+const STARTERS_SINGLE_SQL = [
+  "Count rows grouped by status",
+  "Rows created per day over the last 30 days",
+  "Top 10 most recent rows",
 ];
 const STARTERS_MULTI = ["Orders per customer, top 10", "Total revenue by product category", "Users with no orders yet"];
 
@@ -76,13 +85,22 @@ function useConnectionKey(): string {
   });
 }
 
+/** Foreign keys per table name (PostgreSQL). */
+type ForeignKeys = Record<string, SqlTable["refs"]>;
+
 /**
  * Studio: ask a question in plain language, get a read-only query, its rows
  * and a chart. Scope is one collection, or the whole database (the model picks
  * collections and joins them). Chats and saved questions are per connection.
+ * PostgreSQL: scope is a table or the whole schema, the model writes one
+ * SELECT from typed columns and real foreign keys, and it runs through
+ * api.sqlQuery (checked by the backend and run in a READ ONLY transaction).
  */
 export function StudioView() {
   const connection = useConnectionKey();
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
   const databases = useExplorer((s) => s.databases);
   const collections = useExplorer((s) => s.collections);
   const selectedDb = useExplorer((s) => s.selectedDb);
@@ -115,6 +133,8 @@ export function StudioView() {
   const [pendingInsight, setPendingInsight] = useState<string | null>(null);
   const fieldCache = useRef<Record<string, string[]>>({});
   const docCache = useRef<Record<string, unknown>>({});
+  const metaCache = useRef<Record<string, Promise<Record<string, TableMeta>>>>({});
+  const fkCache = useRef<Record<string, Promise<ForeignKeys>>>({});
   const transcriptEnd = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -164,7 +184,8 @@ export function StudioView() {
 
   const collectionNames = async () => {
     const list = collections[database] ?? (await loadCollections(database));
-    return list.filter((c) => c.kind !== "view").map((c) => c.name);
+    // Postgres views are as queryable as tables.
+    return list.filter((c) => pg || c.kind !== "view").map((c) => c.name);
   };
 
   const sampleFields = async (names: string[]): Promise<DbSchema> => {
@@ -193,6 +214,83 @@ export function StudioView() {
         .catch(() => null);
     }
     return docCache.current[key];
+  };
+
+  /** Postgres: real foreign keys of every table in the schema (one call). */
+  const foreignKeys = (): Promise<ForeignKeys> => {
+    const key = `${connection}/${database}`;
+    if (!(key in fkCache.current)) {
+      fkCache.current[key] = api
+        .dbOverview(database)
+        .then((o) => Object.fromEntries(o.collections.map((c) => [c.name, c.refs])))
+        .catch(() => ({}));
+    }
+    return fkCache.current[key];
+  };
+
+  /** Postgres: every table's columns and key, fetched once per schema. */
+  const schemaMeta = (): Promise<Record<string, TableMeta>> => {
+    const key = `${connection}/${database}`;
+    if (!(key in metaCache.current)) {
+      metaCache.current[key] = api.schemaMeta(database).catch(() => ({}));
+    }
+    return metaCache.current[key];
+  };
+
+  /** Postgres: typed columns, primary key and foreign keys, in `names` order. */
+  const describeTables = async (names: string[]): Promise<SqlSchema> => {
+    const [fks, metas] = await Promise.all([foreignKeys(), schemaMeta()]);
+    const described = names.map((name): SqlTable => {
+      const meta = metas[name];
+      return {
+        kind: meta?.kind,
+        columns: (meta?.columns ?? []).slice(0, 50).map((c) => ({ name: c.name, type: c.dataType })),
+        primaryKey: meta?.primaryKey ?? [],
+        refs: fks[name] ?? [],
+      };
+    });
+    return Object.fromEntries(names.map((n, i) => [n, described[i]]));
+  };
+
+  /** Postgres single-table scope: the table plus the tables it references. */
+  const scopeTables = async (name: string): Promise<SqlSchema> => {
+    const fks = await foreignKeys();
+    const targets = (fks[name] ?? []).map((r) => r.to).filter((to) => to !== name && !to.includes("."));
+    return describeTables([name, ...new Set(targets)].slice(0, 7));
+  };
+
+  /** Postgres: up to two rows, read through the same read-only SQL path. */
+  const sampleRows = async (name: string) => {
+    const key = `sql:${database}/${name}`;
+    if (!(key in docCache.current)) {
+      docCache.current[key] = await api
+        .sqlQuery(database, `SELECT * FROM ${sqlIdent(name)} LIMIT 2`, 2)
+        .then((p) => (p.docs.length ? p.docs : null))
+        .catch(() => null);
+    }
+    return docCache.current[key];
+  };
+
+  /** Whole schema (Postgres): describe every table, let the model pick the
+   *  relevant ones (bridges included), then attach sample rows. */
+  const resolveSqlSchema = async (prompt: string) => {
+    const names = await collectionNames();
+    if (names.length === 0) throw new Error(`${database} has no ${t.colls} to query`);
+    const full = await describeTables(names.slice(0, 80));
+    const schema: DbSchema = Object.fromEntries(Object.entries(full).map(([n, x]) => [n, x.columns.map((c) => c.name)]));
+    const picked = await selectCollections({ engine, prompt, database, schema, tables: full });
+    const chosen = picked.collections.length ? picked.collections : names.slice(0, 6);
+    const tables: SqlSchema = Object.fromEntries(chosen.map((n) => [n, full[n]]));
+    const samples: Record<string, unknown> = {};
+    if (shareSamples) {
+      await Promise.all(
+        chosen.map(async (n) => {
+          const rows = await sampleRows(n);
+          if (rows) samples[n] = rows;
+        })
+      );
+    }
+    return { schema: Object.fromEntries(chosen.map((n) => [n, schema[n] ?? []])), tables, samples, usage: picked.usage };
   };
 
   /** Whole database: sample every collection's fields, let the model pick the
@@ -224,7 +322,7 @@ export function StudioView() {
     const history = existing ? buildHistory(existing.turns) : [];
     const sid = existing ? existing.id : newSession(connection, database, scope, prompt);
     addTurn(sid, { role: "user", text: prompt });
-    const aid = addTurn(sid, { role: "assistant", pending: true, status: multi ? "Reading the database" : "Writing the query" });
+    const aid = addTurn(sid, { role: "assistant", pending: true, status: multi ? `Reading the ${t.db}` : "Writing the query" });
     setDraft("");
     setSuggestions(null);
     setNewTopicHint(false);
@@ -233,13 +331,18 @@ export function StudioView() {
     try {
       let schema: DbSchema | undefined;
       let samples: Record<string, unknown> | undefined;
+      let tables: SqlSchema | undefined;
       if (multi) {
-        const resolved = await resolveSchema(prompt);
-        ({ schema, samples } = resolved);
+        const resolved = pg ? await resolveSqlSchema(prompt) : { ...(await resolveSchema(prompt)), tables: undefined };
+        ({ schema, samples, tables } = resolved);
         usage = addUsage(usage, resolved.usage);
         patchTurn(sid, aid, { status: `Writing a query across ${Object.keys(schema).join(", ")}` });
+      } else if (pg) {
+        tables = await scopeTables(scope);
       }
       const { plan, usage: planUsage } = await generateVizPlan({
+        engine,
+        tables,
         prompt,
         database,
         collection: multi ? undefined : scope,
@@ -253,10 +356,19 @@ export function StudioView() {
         patchTurn(sid, aid, { pending: false, status: undefined, blocked: true, plan, usage, model });
         return;
       }
-      const runCollection = multi ? plan.collection! : scope;
+      // SQL: the primary table only names the shell tab; fall back to the
+      // first chosen table when the model named something else (a CTE, say).
+      const runCollection = !multi
+        ? scope
+        : pg && !(tables && plan.collection && plan.collection in tables)
+          ? Object.keys(tables ?? {})[0] ?? plan.collection ?? scope
+          : plan.collection!;
       patchTurn(sid, aid, { status: `Running on ${runCollection}` });
       const page =
-        plan.kind === "aggregate"
+        plan.kind === "sql"
+          ? // Only ever sqlQuery (never the shell): one SELECT, checked and run READ ONLY by the backend.
+            await api.sqlQuery(database, plan.sql!, RESULT_LIMIT)
+          : plan.kind === "aggregate"
           ? // readOnly: the backend rejects $out / $merge on this path no matter what the model wrote.
             await api.aggregate(database, runCollection, plan.stages!, false, true)
           : await api.findDocuments({
@@ -276,6 +388,7 @@ export function StudioView() {
         runCollection,
         docs: page.docs,
         docCount: page.docs.length,
+        capped: plan.kind === "sql" ? page.appliedDefaultLimit : undefined,
         execMs: page.execMs,
         chartType: plan.chart?.type ?? null,
         usage,
@@ -293,9 +406,13 @@ export function StudioView() {
   const loadSuggestions = async () => {
     setSuggesting(true);
     try {
-      const res = multi
-        ? await suggestPrompts({ database, schema: await sampleFields((await collectionNames()).slice(0, 15)) })
-        : await suggestPrompts({ database, collection: scope, fields });
+      const res = pg
+        ? multi
+          ? await suggestPrompts({ engine, database, schema: {}, tables: await describeTables((await collectionNames()).slice(0, 15)) })
+          : await suggestPrompts({ engine, database, collection: scope, fields, tables: await scopeTables(scope) })
+        : multi
+          ? await suggestPrompts({ database, schema: await sampleFields((await collectionNames()).slice(0, 15)) })
+          : await suggestPrompts({ database, collection: scope, fields });
       setSuggestions(res.prompts);
     } catch (e) {
       toast.error(errMsg(e));
@@ -339,7 +456,7 @@ export function StudioView() {
   );
 
   const sessionUsage = turns.reduce((acc, t) => (t.usage ? addUsage(acc, t.usage) : acc), ZERO_USAGE);
-  const scopeLabel = multi ? "the whole database" : scope;
+  const scopeLabel = multi ? `the whole ${t.db}` : scope;
 
   if (!configured) {
     return (
@@ -456,8 +573,8 @@ export function StudioView() {
               setScope(WHOLE_DB);
             }}
           >
-            <SelectTrigger className="h-8 w-[170px] text-xs" aria-label="Database">
-              <SelectValue placeholder="Database" />
+            <SelectTrigger className="h-8 w-[170px] text-xs" aria-label={t.Db}>
+              <SelectValue placeholder={t.Db} />
             </SelectTrigger>
             <SelectContent>
               {databases.map((d) => (
@@ -468,14 +585,14 @@ export function StudioView() {
             </SelectContent>
           </Select>
           <Select value={scope} onValueChange={setScope} disabled={!database}>
-            <SelectTrigger className="h-8 w-[210px] text-xs" aria-label="Collection">
-              <SelectValue placeholder="Collection" />
+            <SelectTrigger className="h-8 w-[210px] text-xs" aria-label={t.Coll}>
+              <SelectValue placeholder={t.Coll} />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={WHOLE_DB}>
                 <span className="flex items-center gap-1.5">
                   <Layers className="h-3.5 w-3.5 text-primary" />
-                  Whole database (joins)
+                  Whole {t.db} (joins)
                 </span>
               </SelectItem>
               {colls.length > 0 && <SelectSeparator />}
@@ -515,17 +632,17 @@ export function StudioView() {
             <div className="mx-auto flex h-full max-w-[640px] flex-col items-center justify-center gap-5 px-6 text-center">
               <div>
                 <h2 className="font-display text-[26px] font-semibold tracking-[-0.02em] text-text">
-                  {ready ? `Ask about ${scopeLabel}` : "Pick a database to start"}
+                  {ready ? `Ask about ${scopeLabel}` : `Pick a ${t.db} to start`}
                 </h2>
                 <p className="mx-auto mt-2 max-w-[460px] text-[12.5px] leading-relaxed text-text-3">
                   Plain English in, a read-only query, its rows and a chart out.
-                  {multi && " Across the whole database the model picks the collections and joins them."}
-                  {!shareSamples && " Sample data sharing is off: only collection and field names are sent."}
+                  {multi && ` Across the whole ${t.db} the model picks the ${t.colls} and joins them.`}
+                  {!shareSamples && ` Sample data sharing is off: only ${t.coll} and ${t.field} names are sent.`}
                 </p>
               </div>
               {ready && (
                 <div className="flex flex-wrap justify-center gap-2">
-                  {(suggestions ?? (multi ? STARTERS_MULTI : STARTERS_SINGLE)).map((p) => (
+                  {(suggestions ?? (multi ? STARTERS_MULTI : pg ? STARTERS_SINGLE_SQL : STARTERS_SINGLE)).map((p) => (
                     <button key={p} className="starts-chip" onClick={() => void ask(p)} disabled={busy}>
                       {p}
                     </button>
@@ -592,7 +709,7 @@ export function StudioView() {
                 }
               }}
               rows={Math.min(6, Math.max(1, draft.split("\n").length))}
-              placeholder={ready ? `Ask about ${scopeLabel}...` : "Pick a database first"}
+              placeholder={ready ? `Ask about ${scopeLabel}...` : `Pick a ${t.db} first`}
               disabled={!ready}
               autoFocus
               aria-label="Question"

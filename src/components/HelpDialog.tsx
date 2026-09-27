@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { BookOpen, Boxes, Keyboard, Search, ShieldCheck, Sparkles } from "lucide-react";
+import { BookOpen, Boxes, Database, Keyboard, Search, ShieldCheck, Sparkles } from "lucide-react";
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
@@ -64,6 +64,7 @@ const SECTIONS = [
   { id: "overview", label: "Overview", icon: BookOpen },
   { id: "connections", label: "Connections", icon: Boxes },
   { id: "querying", label: "Querying", icon: Search },
+  { id: "postgres", label: "PostgreSQL", icon: Database },
   { id: "ai", label: "AI and Studio", icon: Sparkles },
   { id: "safety", label: "Safety", icon: ShieldCheck },
   { id: "shortcuts", label: "Shortcuts", icon: Keyboard },
@@ -171,7 +172,7 @@ function Connections() {
             "Includes credentials, re-encrypted under a passphrase you choose (Argon2id + AES-256). There is no recovery without the passphrase.",
           ],
           ["Import", "Pick a file; encrypted ones ask for the passphrase. Everything comes in as new profiles, existing ones are untouched."],
-          ["Copy connection string", "From a tile's menu, with or without the password, ready for mongosh."],
+          ["Copy connection string", "From a tile's menu, with or without the password, ready for mongosh or psql."],
         ]}
       />
     </>
@@ -219,6 +220,79 @@ function Querying() {
   );
 }
 
+function Postgres() {
+  return (
+    <>
+      <H>MongoDB words, PostgreSQL things</H>
+      <P>
+        A PostgreSQL connection uses the same console. The picker lists <B>schemas</B> instead of databases and{" "}
+        <B>tables</B>, views, materialized views and foreign tables instead of collections; each row is shown as a
+        plain JSON object. A connection is bound to one database (the one in the URI); switch schemas from the picker.
+      </P>
+      <H>SQL in the dock</H>
+      <P>
+        The query boxes take SQL fragments: the filter is a <Code>WHERE</Code> condition, sort is an{" "}
+        <Code>ORDER BY</Code> list and projection is a column list. Leave a box empty for no clause. <B>Build</B>{" "}
+        writes the condition for you.
+      </P>
+      <Block>{`status = 'paid' AND total > 100
+email ILIKE '%@example.com' AND deleted_at IS NULL
+meta->>'plan' = 'pro' AND created_at > now() - interval '7 days'
+id IN (7, 12, 31)`}</Block>
+      <Rows
+        rows={[
+          ["Explain", "EXPLAIN (ANALYZE) of the same query: plan nodes, sequential scans, planning and execution time."],
+          ["Bulk update", <>A <Code>SET</Code> list such as <Code>status = 'archived', updated_at = now()</Code>, applied to every row matching the filter.</>],
+          ["Import and export", "JSON, NDJSON and CSV (header row = column names, empty cell = column default). There is no BSON for rows."],
+          ["Copy, duplicate, diff", "Copy and diff work between any two open PostgreSQL connections. Diff and sync match rows by primary key."],
+        ]}
+      />
+      <H>SQL shell (advanced)</H>
+      <P>
+        The Shell view runs SQL. Statements run one after another like psql, and the last one that returns rows is
+        shown in the grid. Press <K>{MOD} {ENTER}</K> to run.
+      </P>
+      <Block>{`SELECT status, count(*) AS n, sum(total) AS revenue
+FROM orders
+WHERE created_at > now() - interval '30 days'
+GROUP BY status
+ORDER BY n DESC;`}</Block>
+      <H>Editing rows</H>
+      <P>
+        Rows are addressed by their <B>primary key</B>. Tables without one can be browsed, queried and exported, but
+        single rows can't be edited or deleted, and they can't be diffed. Views and materialized views are read-only.
+        Identity, generated and defaulted columns are filled in by the database on insert.
+      </P>
+      <H>Read-only, for real</H>
+      <P>
+        Read-only and production workspaces run every statement inside a <Code>BEGIN READ ONLY</Code> transaction that
+        is rolled back afterwards, so PostgreSQL itself refuses writes, including writes hidden in functions. Studio
+        queries run the same way.
+      </P>
+      <H>Connecting</H>
+      <P>
+        Any PostgreSQL server or wire-compatible service works: Neon, Supabase, Tiger Cloud / Timescale, Amazon RDS
+        and Aurora, PlanetScale Postgres, Google Cloud SQL and AlloyDB, Azure Database for PostgreSQL, Crunchy Bridge,
+        Render, Railway, or your own server. Paste the provider's <Code>postgresql://</Code> URI or fill in the form.
+      </P>
+      <Rows
+        rows={[
+          [
+            <Code>sslmode</Code>,
+            <>
+              <Code>disable</Code>, <Code>prefer</Code> (the default), <Code>require</Code> (encrypted, certificate not
+              checked), <Code>verify-ca</Code> and <Code>verify-full</Code> (checked against the system roots or a CA
+              file you pick). Hosted providers usually want <Code>require</Code> or stricter.
+            </>,
+          ],
+          ["Poolers", "Transaction-mode poolers (PgBouncer, Supavisor, Neon's pooled endpoint) work: no named prepared statements are used."],
+          ["SSH tunnels", "The same bastion settings as MongoDB connections."],
+        ]}
+      />
+    </>
+  );
+}
+
 function Ai() {
   return (
     <>
@@ -247,14 +321,14 @@ function Ai() {
       <P>
         AI features use your own OpenRouter key (Settings &gt; AI), stored encrypted like connection passwords. Pick any
         model OpenRouter offers; <B>openrouter/auto</B> chooses one per request. Nothing is sent until you use an AI
-        feature. Collection and field names are always sent; one sample document per collection and result rows are sent
+        feature. Collection and field names (table and column names for PostgreSQL) are always sent; one sample document per collection and result rows are sent
         only while <B>Share sample data</B> is on.
       </P>
       <div className="notice acc mt-3">
         <ShieldCheck />
         <span>
           Studio never writes. Write requests are refused, and the backend rejects $out and $merge on Studio queries no
-          matter what the model returns.
+          matter what the model returns. On PostgreSQL, Studio runs a single SELECT inside a READ ONLY transaction.
         </span>
       </div>
     </>
@@ -268,7 +342,7 @@ function Safety() {
       <P>Mongo Bongo assumes the database in front of you matters. Destructive actions are slow on purpose.</P>
       <Rows
         rows={[
-          ["Drop and clear", "Dropping a database or collection, or clearing a collection, asks you to type its name and offers an export first."],
+          ["Drop and clear", "Dropping a database or collection, or clearing a collection, asks you to type its name and offers an export first. The same goes for PostgreSQL tables and views."],
           ["Multi-document delete", "Deleting several documents offers a JSON backup before anything is removed (Settings > Safety)."],
           ["Read-only workspaces", "Writes are refused at the API layer, not just hidden in the UI. Read-only and production sessions cannot write until you flip the status bar switch."],
           ["Production edit mode", "Leaving read-only on a production connection asks for confirmation and lasts for the session only."],
@@ -322,6 +396,7 @@ const RENDER: Record<SectionId, () => ReactNode> = {
   overview: Overview,
   connections: Connections,
   querying: Querying,
+  postgres: Postgres,
   ai: Ai,
   safety: Safety,
   shortcuts: Shortcuts,
@@ -340,7 +415,7 @@ export function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange
       <DialogContent className="h-[80vh] max-w-[860px]">
         <DialogHeader>
           <DialogTitle>Help</DialogTitle>
-          <DialogDescription>how the console fits together · connections · querying · safety · keys</DialogDescription>
+          <DialogDescription>how the console fits together · connections · querying · PostgreSQL · safety · keys</DialogDescription>
         </DialogHeader>
         <DialogBody className="flex-row gap-0 overflow-hidden p-0 pt-0">
           <nav className="no-select flex w-[176px] shrink-0 flex-col gap-[2px] border-r border-line px-2 py-2">

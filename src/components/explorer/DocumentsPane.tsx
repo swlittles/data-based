@@ -20,8 +20,9 @@ import { useSettings } from "@/stores/settings";
 import { useConnections } from "@/stores/connections";
 import { api, errMsg, type Doc } from "@/lib/api";
 import { runExport } from "@/lib/files";
-import { toShellText } from "@/lib/bson";
 import { formatCount } from "@/lib/bson";
+import { canAddress, idsFilter, rowId, rowLabel, stripGenerated, terms } from "@/lib/engine";
+import { useIdentity } from "@/components/explorer/useIdentity";
 
 /**
  * Find results for the Table / Documents views. The query itself lives in
@@ -36,6 +37,14 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
     (s) => s.workspaces.find((w) => w.info.id === s.activeId)?.readOnly ?? false
   );
   const offerBackup = useSettings((s) => s.offerBackupOnDelete);
+  const ident = useIdentity(tab);
+  const pg = ident.engine === "postgres";
+  const t = terms(ident.engine);
+  const canWrite = !readOnly && ident.editable;
+  const columnTypes = useMemo(
+    () => (tab.meta ? Object.fromEntries(tab.meta.columns.map((c) => [c.name, c.dataType])) : undefined),
+    [tab.meta]
+  );
   const d = tab.docs;
   const view = tab.mode === "documents" ? "json" : "table";
 
@@ -53,17 +62,19 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
   const actions = useMemo(
     () => ({
       onView: (doc: Doc) => setDrawer(tab.id, { kind: "doc", doc, source: "docs", view: initialView }),
-      onEdit: readOnly
+      onEdit: !canWrite
         ? undefined
         : (doc: Doc) => setDrawer(tab.id, { kind: "doc", doc, source: "docs", view: initialView }),
-      onDuplicate: readOnly ? undefined : (doc: Doc) => setDrawer(tab.id, { kind: "insert", template: doc }),
-      onDelete: readOnly ? undefined : (doc: Doc) => setConfirmOne(doc),
+      onDuplicate: !canWrite
+        ? undefined
+        : (doc: Doc) => setDrawer(tab.id, { kind: "insert", template: pg ? stripGenerated(doc, tab.meta) : doc }),
+      onDelete: !canWrite ? undefined : (doc: Doc) => setConfirmOne(doc),
     }),
-    [tab.id, setDrawer, readOnly, initialView]
+    [tab.id, setDrawer, canWrite, initialView, pg, tab.meta]
   );
 
   const selectedDoc = tab.drawer.kind === "doc" ? tab.drawer.doc : null;
-  const selectedKey = selectedDoc ? docSelectionKey(selectedDoc) : null;
+  const selectedKey = selectedDoc ? docSelectionKey(selectedDoc, ident) : null;
 
   // ---- multi-select (table view) ------------------------------------------
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -94,21 +105,21 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
   const selectedIds = () =>
     d.docs
       .filter((doc) => {
-        const k = docSelectionKey(doc);
+        const k = docSelectionKey(doc, ident);
         return k !== null && selected.has(k);
       })
-      .map((doc) => doc._id);
+      .map((doc) => rowId(doc, ident));
 
   const deleteSelected = async () => {
     const ids = selectedIds();
     if (ids.length === 0) return;
     setDeletingSelected(true);
     try {
-      const filter = toShellText({ _id: { $in: ids } });
+      const filter = idsFilter(ids, ident);
       if (backupSelected) {
         const path = await save({
-          title: `Backup ${ids.length} document${ids.length === 1 ? "" : "s"} before deleting`,
-          defaultPath: `${tab.collection}-${ids.length}-docs.json`,
+          title: `Backup ${ids.length} ${ids.length === 1 ? t.doc : t.docs} before deleting`,
+          defaultPath: `${tab.collection}-${ids.length}-${pg ? "rows" : "docs"}.json`,
           filters: [{ name: "JSON", extensions: ["json"] }],
         }).catch(() => null);
         if (!path) {
@@ -130,7 +141,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
         }
       }
       const r = await api.bulkDelete(tab.database, tab.collection, filter);
-      toast.success(`Deleted ${formatCount(r.deleted)} document${r.deleted === 1 ? "" : "s"}`);
+      toast.success(`Deleted ${formatCount(r.deleted)} ${r.deleted === 1 ? t.doc : t.docs}`);
       setConfirmSelected(false);
       setSelected(new Set());
       run(false);
@@ -146,9 +157,10 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
     if (!confirmOne) return;
     setDeletingOne(true);
     try {
-      await api.deleteDocument(tab.database, tab.collection, confirmOne._id);
-      toast.success("Document deleted");
-      if (selectedKey && selectedKey === docSelectionKey(confirmOne)) setDrawer(tab.id, { kind: "closed" });
+      if (!canAddress(confirmOne, ident)) throw new Error(`This ${t.doc} can't be addressed individually`);
+      await api.deleteDocument(tab.database, tab.collection, rowId(confirmOne, ident));
+      toast.success(`${t.Doc} deleted`);
+      if (selectedKey && selectedKey === docSelectionKey(confirmOne, ident)) setDrawer(tab.id, { kind: "closed" });
       setConfirmOne(null);
       run(false);
     } catch (e) {
@@ -170,7 +182,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
       {selected.size > 0 && (
         <div className="notice acc mx-[var(--pad)] mt-3 shrink-0 items-center py-1.5 no-select">
           <span className="font-mono text-[11.5px] text-text">
-            {selected.size} document{selected.size === 1 ? "" : "s"} selected
+            {selected.size} {selected.size === 1 ? t.doc : t.docs} selected
           </span>
           <div className="grow" />
           <button className="btn qt sm" onClick={() => setSelected(new Set())}>
@@ -197,7 +209,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
       ) : d.docs.length === 0 && !d.loading ? (
         <Blank
           small
-          title={d.filter.trim() ? "No documents match this filter" : "This collection is empty"}
+          title={d.filter.trim() ? `No ${t.docs} match this ${pg ? "condition" : "filter"}` : `This ${t.coll} is empty`}
           text={
             d.filter.trim() ? (
               <>
@@ -206,7 +218,11 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
                 types.
               </>
             ) : readOnly ? (
-              "Switch to edit mode to insert the first document."
+              `Switch to edit mode to insert the first ${t.doc}.`
+            ) : !ident.editable ? (
+              `This ${tab.meta?.kind === "matview" ? "materialized view" : "view"} returns no rows.`
+            ) : pg ? (
+              "Insert adds the first row, or import a JSON / CSV file."
             ) : (
               "Insert adds the first document, or import a JSON / CSV / BSON file."
             )
@@ -230,9 +246,9 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
                   Edit filter
                 </button>
               </>
-            ) : !readOnly ? (
+            ) : canWrite ? (
               <button className="btn pri" onClick={() => setDrawer(tab.id, { kind: "insert" })}>
-                Insert a document
+                Insert a {t.doc}
               </button>
             ) : undefined
           }
@@ -244,6 +260,9 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
           actions={actions}
           selection={view === "table" ? selection : undefined}
           activeKey={selectedKey}
+          identity={ident}
+          columnTypes={columnTypes}
+          emptyText={`No ${t.docs} match`}
         />
       )}
 
@@ -251,7 +270,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
       <Dialog open={confirmSelected} onOpenChange={(o) => !o && !deletingSelected && setConfirmSelected(false)}>
         <DialogContent className="max-w-[480px]">
           <DialogHeader>
-            <DialogTitle>Delete {selected.size} selected document{selected.size === 1 ? "" : "s"}?</DialogTitle>
+            <DialogTitle>Delete {selected.size} selected {selected.size === 1 ? t.doc : t.docs}?</DialogTitle>
             <DialogDescription>
               {tab.database}.{tab.collection}
             </DialogDescription>
@@ -260,13 +279,13 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
             <div className="warnbox">
               <Trash2 />
               <div>
-                The selected documents are permanently removed from the collection. It cannot be undone
+                The selected {t.docs} are permanently removed from the {t.coll}. It cannot be undone
                 from Mongo Bongo.
               </div>
             </div>
             {offerBackup && (
               <CheckRow on={backupSelected} onChange={setBackupSelected}>
-                Export the selected documents to a JSON file first
+                Export the selected {t.docs} to a JSON file first
               </CheckRow>
             )}
           </DialogBody>
@@ -286,7 +305,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
       <Dialog open={!!confirmOne} onOpenChange={(o) => !o && !deletingOne && setConfirmOne(null)}>
         <DialogContent className="max-w-[440px]">
           <DialogHeader>
-            <DialogTitle>Delete document?</DialogTitle>
+            <DialogTitle>Delete {t.doc}?</DialogTitle>
             <DialogDescription>
               {tab.database}.{tab.collection}
             </DialogDescription>
@@ -295,7 +314,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
             <div className="warnbox">
               <Trash2 />
               <div>
-                <span className="mono">_id {confirmOne ? toShellText(confirmOne._id) : ""}</span> will be removed.
+                <span className="mono">{confirmOne ? rowLabel(confirmOne, ident) : ""}</span> will be removed.
                 It cannot be undone from Mongo Bongo.
               </div>
             </div>

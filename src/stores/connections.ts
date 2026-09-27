@@ -5,6 +5,7 @@ import {
   errMsg,
   writeGuard,
   type ConnectionInfo,
+  type Engine,
   type ProfileInput,
   type ProfileSummary,
   type SecurityInfo,
@@ -23,6 +24,7 @@ export interface Workspace {
 const newWorkspace = (info: ConnectionInfo): Workspace => {
   const readOnly = info.access !== "readwrite";
   writeGuard.setReadOnly(info.id, info.name, readOnly);
+  writeGuard.setEngine(info.id, info.engine ?? "mongo");
   return { info, readOnly };
 };
 
@@ -374,3 +376,6 @@ export const useConnections = create<ConnectionsState>((set, get) => {
     },
   };
 });
+
+/** Engine of the active workspace ("mongo" when nothing is connected). */
+export const useEngine = (): Engine => useConnections((s) => s.active?.engine ?? "mongo");

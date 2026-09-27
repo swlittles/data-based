@@ -19,6 +19,20 @@ const SEEN_KEY = "mongo-bongo-whats-new-seen";
 
 export const SLIDES: WhatsNewSlide[] = [
   {
+    version: "0.2.0",
+    title: "PostgreSQL",
+    tagline: "Mongo Bongo now speaks PostgreSQL too - same console, same guard rails.",
+    points: [
+      "Connect to any Postgres: Neon, Supabase, Tiger Cloud, RDS / Aurora, PlanetScale, Cloud SQL, Azure, your own server",
+      "Schemas and tables in the picker; rows in the Table and Documents views, edited by primary key",
+      "SQL in the dock: WHERE, ORDER BY and column lists, plus a visual WHERE builder",
+      "A SQL shell, EXPLAIN ANALYZE plans, indexes (btree, gin, gist, brin, hnsw...) and schema view",
+      "Read-only and production workspaces run inside READ ONLY transactions, so the server refuses writes",
+      "Import and export JSON, NDJSON and CSV; copy, duplicate and diff tables between Postgres connections",
+      "Studio writes read-only SQL and charts the answer",
+    ],
+  },
+  {
     version: "0.1.0",
     title: "Mongo Bongo",
     tagline: "First build.",

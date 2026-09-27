@@ -1,10 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
-/** A document in MongoDB relaxed Extended JSON form. */
+/** A document in MongoDB relaxed Extended JSON form, or a PostgreSQL row as
+ *  a plain JSON object. */
 export type Doc = Record<string, unknown>;
 
+/** Which database engine a connection speaks. */
+export type Engine = "mongo" | "postgres";
+
 export interface ConnFields {
-  scheme: "mongodb" | "mongodb+srv";
+  scheme: "mongodb" | "mongodb+srv" | "postgresql";
   host: string;
   port?: number | null;
   extraHosts: string[];
@@ -23,7 +27,24 @@ export interface ConnFields {
   serverSelectionTimeoutMs?: number | null;
   maxPoolSize?: number | null;
   extraOptions?: string | null;
+  /** PostgreSQL sslmode: disable | prefer | require | verify-ca | verify-full. */
+  sslMode?: string | null;
+  /** PostgreSQL client key file (sslkey); tlsCertKeyFile is sslcert. */
+  tlsKeyFile?: string | null;
 }
+
+export const emptyPgFields = (): ConnFields => ({
+  scheme: "postgresql",
+  host: "localhost",
+  port: 5432,
+  extraHosts: [],
+  username: "postgres",
+  defaultDatabase: "postgres",
+  directConnection: false,
+  tlsEnabled: false,
+  tlsInsecure: false,
+  sslMode: "prefer",
+});
 
 export const emptyFields = (): ConnFields => ({
   scheme: "mongodb",
@@ -79,6 +100,7 @@ export interface ProfileInput {
 
 export interface ProfileSummary {
   id: string;
+  engine: Engine;
   name: string;
   color?: string | null;
   access: AccessMode;
@@ -106,6 +128,11 @@ export interface ConnectionInfo {
   access: AccessMode;
   /** "user@bastion" when connected through an SSH tunnel. */
   ssh?: string | null;
+  engine: Engine;
+  /** PostgreSQL: the database this connection is bound to. */
+  database?: string | null;
+  /** PostgreSQL: schema to open first (?schema= in the URI). */
+  defaultSchema?: string | null;
 }
 
 export interface TestResult {
@@ -144,7 +171,8 @@ export interface ImportOutcome {
 
 export interface CollectionOverview {
   name: string;
-  kind: "collection" | "view" | "timeseries";
+  /** MongoDB: collection | view | timeseries. PostgreSQL: table | partitioned | view | matview | foreign. */
+  kind: "collection" | "view" | "timeseries" | "table" | "partitioned" | "matview" | "foreign";
   count?: number | null;
   size?: number | null;
   avgObjSize?: number | null;
@@ -176,7 +204,7 @@ export interface DbInfo {
 
 export interface CollInfo {
   name: string;
-  kind: string; // "collection" | "view" | "timeseries"
+  kind: string; // "collection" | "view" | "timeseries" (PostgreSQL: "table" | "partitioned" | "view" | "matview" | "foreign")
 }
 
 export interface DocsPage {
@@ -299,11 +327,35 @@ export interface IndexInfo {
   sparse: boolean;
   hidden: boolean;
   ttlSeconds?: number | null;
-  partialFilter?: Doc | null;
+  /** MongoDB: partial filter document. PostgreSQL: the WHERE predicate text. */
+  partialFilter?: Doc | string | null;
   /** Operations served since the stats epoch; null when $indexStats is unavailable. */
   usageOps?: number | null;
   /** ISO timestamp the usage counter has been accumulating since. */
   usageSince?: string | null;
+  /** PostgreSQL only. */
+  primary?: boolean;
+  method?: string;
+  definition?: string;
+  size?: number;
+}
+
+/** PostgreSQL table metadata - the primary key addresses rows. */
+export interface ColumnMeta {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  default?: string | null;
+  /** "a" = GENERATED ALWAYS, "d" = BY DEFAULT identity. */
+  identity?: string | null;
+  generated: boolean;
+}
+
+export interface TableMeta {
+  kind: "table" | "partitioned" | "view" | "matview" | "foreign";
+  columns: ColumnMeta[];
+  primaryKey: string[];
+  comment?: string | null;
 }
 
 /** One stage's profile from aggregate_stage_stats. */
@@ -348,6 +400,9 @@ export interface AiKeyInfo {
 }
 
 export interface ExplainSummary {
+  /** PostgreSQL: planner time and estimated cost. */
+  planningTimeMillis?: number | null;
+  totalCost?: number | null;
   indexName: string | null;
   stages: string[];
   isCollectionScan: boolean;
@@ -371,11 +426,19 @@ export interface SchemaField {
   coverage: number; // 0..1
   types: SchemaFieldType[];
   examples: unknown[];
+  /** PostgreSQL columns: declared type, nullability, default, key membership. */
+  dataType?: string | null;
+  nullable?: boolean | null;
+  default?: string | null;
+  primaryKey?: boolean | null;
 }
 
 export interface SchemaReport {
   sampled: number;
   fields: SchemaField[];
+  /** PostgreSQL: primary key columns and relation kind. */
+  primaryKey?: string[];
+  kind?: TableMeta["kind"];
 }
 
 export interface CollectionStats {
@@ -418,6 +481,7 @@ export class ReadOnlyError extends Error {
 }
 
 const workspaceNames = new Map<string, string>();
+const workspaceEngines = new Map<string, Engine>();
 
 export const writeGuard = {
   setActive(id: string | null) {
@@ -431,6 +495,15 @@ export const writeGuard = {
   forget(id: string) {
     readOnlyWorkspaces.delete(id);
     workspaceNames.delete(id);
+    workspaceEngines.delete(id);
+  },
+  setEngine(id: string, engine: Engine) {
+    workspaceEngines.set(id, engine);
+  },
+  /** Engine of a workspace (the active one by default). */
+  engine(id?: string | null): Engine {
+    const target = id ?? activeWorkspace;
+    return (target && workspaceEngines.get(target)) || "mongo";
   },
   isReadOnly(id?: string | null): boolean {
     const target = id ?? activeWorkspace;
@@ -577,6 +650,10 @@ export const api = {
     hidden?: boolean;
     partialFilterText?: string;
     collationLocale?: string;
+    /** PostgreSQL: btree (default) | hash | gin | gist | brin | spgist | hnsw | ivfflat. */
+    method?: string;
+    /** PostgreSQL: CREATE INDEX CONCURRENTLY (no write lock). */
+    concurrently?: boolean;
   }) => invoke<string>("create_index", args)),
   dropIndex: w((database: string, collection: string, name: string) =>
     invoke<void>("drop_index", { database, collection, name })),
@@ -592,6 +669,8 @@ export const api = {
     projection: string;
     pipelineStages?: StageInput[];
     verbosity?: string;
+    /** PostgreSQL: LIMIT for EXPLAIN ANALYZE so it never scans more than a page needs. */
+    limit?: number;
   }) => invoke<ExplainSummary>("explain_query", args),
   analyzeSchema: (database: string, collection: string, sampleSize?: number) =>
     invoke<SchemaReport>("analyze_schema", { database, collection, sampleSize }),
@@ -629,6 +708,16 @@ export const api = {
   /** Read-only workspaces pass `readOnly` so the backend rejects any write. */
   runShell: (database: string, text: string) =>
     invoke<ShellOutcome>("run_shell", { database, text, readOnly: writeGuard.isReadOnly() }),
+
+  // PostgreSQL
+  tableMeta: (database: string, collection: string, workspace?: string) =>
+    invoke<TableMeta>("table_meta", { database, collection, workspace }),
+  /** Metadata of every table / view in a schema, keyed by name (one call). */
+  schemaMeta: (database: string, workspace?: string) =>
+    invoke<Record<string, TableMeta>>("schema_meta", { database, workspace }),
+  /** One read-only SELECT (AI Studio). Checked and run in a READ ONLY transaction. */
+  sqlQuery: (database: string, sql: string, limit?: number) =>
+    invoke<DocsPage>("sql_query", { database, sql, limit }),
 
   // AI (OpenRouter) - the key is write-only from the webview
   aiStatus: () => invoke<AiStatus>("ai_status"),

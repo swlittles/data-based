@@ -10,11 +10,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { api, errMsg, type ExplainSummary, type StageInput } from "@/lib/api";
+import { api, errMsg, type Doc, type ExplainSummary, type StageInput } from "@/lib/api";
 import { formatCount } from "@/lib/bson";
+import { sqlIdent } from "@/lib/engine";
 import { cn } from "@/lib/utils";
 import { formatUsage, interpretExplain } from "@/lib/ai";
 import { AI_NOT_READY, useAi } from "@/stores/ai";
+import { useEngine } from "@/stores/connections";
+import { PgPlanTree } from "./PgPlanTree";
 
 export interface ExplainRequest {
   database: string;
@@ -23,7 +26,19 @@ export interface ExplainRequest {
   sort: string;
   projection: string;
   pipelineStages?: StageInput[];
+  /** PostgreSQL: page size, used as the LIMIT of EXPLAIN ANALYZE. */
+  limit?: number;
 }
+
+/** Suggested index keys as a SQL column list: `status, created_at DESC`. */
+function sqlColumns(keys: Doc): string {
+  return Object.entries(keys)
+    .map(([col, dir]) => `${sqlIdent(col)}${dir === -1 ? " DESC" : ""}`)
+    .join(", ");
+}
+
+const fmtMs = (ms: number | null | undefined) =>
+  ms === null || ms === undefined ? null : `${ms >= 100 ? Math.round(ms) : ms.toFixed(2)} ms`;
 
 interface ExplainSheetProps {
   request: ExplainRequest | null;
@@ -39,6 +54,8 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
   const [creating, setCreating] = useState(false);
   const [createdIndex, setCreatedIndex] = useState<string | null>(null);
   const aiReady = useAi((st) => st.configured);
+  const engine = useEngine();
+  const pg = engine === "postgres";
   const [reading, setReading] = useState<{ busy: boolean; notes?: string; usage?: string } | null>(null);
 
   const askAi = async () => {
@@ -51,6 +68,7 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
     try {
       const { raw, ...rest } = summary;
       const { notes, usage } = await interpretExplain({
+        engine,
         database: request.database,
         collection: request.collection,
         summary: rest,
@@ -70,7 +88,7 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
       const name = await api.createIndex({
         database: request.database,
         collection: request.collection,
-        keysText: JSON.stringify(summary.suggestedIndex),
+        keysText: pg ? sqlColumns(summary.suggestedIndex) : JSON.stringify(summary.suggestedIndex),
         unique: false,
       });
       setCreatedIndex(name);
@@ -91,7 +109,7 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
     setReading(null);
     setLoading(true);
     api
-      .explainQuery({ verbosity: "executionStats", ...request })
+      .explainQuery({ verbosity: "executionStats", ...request, limit: request.limit })
       .then(setSummary)
       .catch((e) => setError(errMsg(e)))
       .finally(() => setLoading(false));
@@ -103,15 +121,18 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
       : null;
   // A scan that reads far more docs than it returns is the classic red flag.
   const inefficient = summary?.isCollectionScan || (ratio !== null && ratio > 10);
+  const rows = pg ? "rows" : "documents";
+  // Postgres: the summary rounds execution time; the raw plan keeps the decimals.
+  const execMs = pg && typeof summary?.raw["Execution Time"] === "number" ? (summary.raw["Execution Time"] as number) : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[640px]">
+      <DialogContent className={pg ? "max-w-[760px]" : "max-w-[640px]"}>
         <DialogHeader>
           <DialogTitle>Explain plan</DialogTitle>
           <DialogDescription>
             {request?.database}.{request?.collection}
-            {request?.pipelineStages ? " · aggregate" : " · find"}
+            {pg ? " · select" : request?.pipelineStages ? " · aggregate" : " · find"}
           </DialogDescription>
         </DialogHeader>
         <DialogBody>
@@ -128,7 +149,9 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
               <div className={cn("warnbox", inefficient ? "soft" : "ok")}>
                 {inefficient ? <AlertTriangle /> : <CheckCircle2 />}
                 <div>
-                  {summary.isCollectionScan ? (
+                  {summary.isCollectionScan && pg ? (
+                    <b>Seq Scan - the table is read row by row{summary.indexName ? "" : "; no index used"}.</b>
+                  ) : summary.isCollectionScan ? (
                     <b>Collection scan - no index used. Every document is read.</b>
                   ) : (
                     <>
@@ -137,21 +160,28 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
                   )}
                   {ratio !== null && (
                     <div className="mt-1 text-text-3">
-                      Examined {ratio.toFixed(1)}x the documents returned
+                      {pg ? "Scanned" : "Examined"} {ratio.toFixed(1)}x the {rows} returned
                       {inefficient && !summary.isCollectionScan ? " - consider a more selective index." : "."}
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="statgrid">
-                {(
-                  [
-                    ["Returned", summary.nReturned],
-                    ["Docs examined", summary.totalDocsExamined],
-                    ["Keys examined", summary.totalKeysExamined],
-                    ["Time", summary.executionTimeMillis === null ? null : `${summary.executionTimeMillis} ms`],
-                  ] as const
+              <div className={cn("statgrid", pg && "five")}>
+                {(pg
+                  ? ([
+                      ["Returned", summary.nReturned],
+                      ["Rows scanned", summary.totalDocsExamined],
+                      ["Est. cost", summary.totalCost == null ? null : summary.totalCost.toFixed(2)],
+                      ["Planning", fmtMs(summary.planningTimeMillis)],
+                      ["Execution", fmtMs(execMs ?? summary.executionTimeMillis)],
+                    ] as const)
+                  : ([
+                      ["Returned", summary.nReturned],
+                      ["Docs examined", summary.totalDocsExamined],
+                      ["Keys examined", summary.totalKeysExamined],
+                      ["Time", summary.executionTimeMillis === null ? null : `${summary.executionTimeMillis} ms`],
+                    ] as const)
                 ).map(([label, value]) => (
                   <div key={label}>
                     <div className="l">{label}</div>
@@ -166,9 +196,13 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
                 <div className="idxrow acc">
                   <span className="pill acc">suggested</span>
                   <div className="min-w-0 flex-1">
-                    <div className="n">{JSON.stringify(summary.suggestedIndex)}</div>
+                    <div className="n">
+                      {pg ? `(${sqlColumns(summary.suggestedIndex)})` : JSON.stringify(summary.suggestedIndex)}
+                    </div>
                     <div className="mt-1 text-[10.5px] text-text-3">
-                      Equality, sort, range field order - derived from this query's shape.
+                      {pg
+                        ? "Equality, sort, range column order - derived from this query's WHERE and ORDER BY."
+                        : "Equality, sort, range field order - derived from this query's shape."}
                     </div>
                   </div>
                   <div className="r">
@@ -186,7 +220,14 @@ export function ExplainSheet({ request, open, onOpenChange }: ExplainSheetProps)
                 </div>
               )}
 
-              {summary.stages.length > 0 && (
+              {pg && (
+                <div className="fld">
+                  <label>Plan</label>
+                  <PgPlanTree raw={summary.raw} />
+                </div>
+              )}
+
+              {!pg && summary.stages.length > 0 && (
                 <div className="fld">
                   <label>Plan stages</label>
                   <div className="flex flex-wrap items-center gap-1.5">

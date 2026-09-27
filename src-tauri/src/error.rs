@@ -4,7 +4,7 @@ use serde::Serialize;
 /// frontend always receives a human-readable message.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("Not connected to MongoDB")]
+    #[error("Not connected")]
     NotConnected,
 
     #[error("{0}")]

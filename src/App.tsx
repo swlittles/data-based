@@ -53,7 +53,7 @@ function NotConnected() {
         text={
           profiles.length
             ? "Pick a saved connection from the rail, or add a new one. Nothing is read until you connect."
-            : "Add a connection to get started. localhost, a replica set or Atlas - it takes ten seconds."
+            : "Add a connection to get started. MongoDB (localhost, a replica set, Atlas) or PostgreSQL (local, Neon, Supabase, RDS...) - it takes ten seconds."
         }
         actions={
           <>
@@ -152,7 +152,9 @@ function App() {
         const tab = ex.tabs.find((t) => t.id === ex.activeTabId);
         const ws = useConnections.getState();
         const ro = ws.workspaces.find((w) => w.info.id === ws.activeId)?.readOnly;
-        if (tab && !ro) {
+        // Views / materialized views have no insert.
+        const view = !!tab?.meta && !["table", "partitioned", "foreign"].includes(tab.meta.kind);
+        if (tab && !ro && !view) {
           e.preventDefault();
           if (tab.mode !== "documents" && tab.mode !== "table") ex.setTabMode(tab.id, "documents");
           ex.setDrawer(tab.id, { kind: "insert" });

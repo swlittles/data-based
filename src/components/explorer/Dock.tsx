@@ -36,7 +36,8 @@ import { CheckRow } from "@/components/ui/check-row";
 import { BulkDeleteDialog, BulkUpdateDialog } from "@/components/explorer/BulkDialogs";
 import { useExplorer, type Tab } from "@/stores/explorer";
 import { useSettings } from "@/stores/settings";
-import { useConnections } from "@/stores/connections";
+import { useConnections, useEngine } from "@/stores/connections";
+import { findAsShell, terms } from "@/lib/engine";
 import { api } from "@/lib/api";
 import { formatCount } from "@/lib/bson";
 import { cn } from "@/lib/utils";
@@ -66,6 +67,10 @@ export function Dock({ tab }: { tab: Tab }) {
     (s) => s.savedQueries[`${scope}/${tab.database}.${tab.collection}`] ?? NO_QUERIES
   );
   const removeQuery = useSettings((s) => s.removeQuery);
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  const lang = pg ? "pgsql" : "mongodb";
 
   // Sampled field paths of the collection feed the query completions.
   const [fields, setFields] = useState<string[]>([]);
@@ -104,7 +109,14 @@ export function Dock({ tab }: { tab: Tab }) {
       if (stages.length === 0) return void toast.error("Add at least one enabled stage");
       setExplain({ database: tab.database, collection: tab.collection, filter: "", sort: "", projection: "", pipelineStages: stages });
     } else {
-      setExplain({ database: tab.database, collection: tab.collection, filter: d.filter, sort: d.sort, projection: d.projection });
+      setExplain({
+        database: tab.database,
+        collection: tab.collection,
+        filter: d.filter,
+        sort: d.sort,
+        projection: d.projection,
+        limit: pg ? d.limit : undefined,
+      });
     }
     setExplainOpen(true);
   };
@@ -120,11 +132,7 @@ export function Dock({ tab }: { tab: Tab }) {
     setAdvancedMode(true);
     const coll = /^[A-Za-z_]\w*$/.test(tab.collection) ? tab.collection : `getCollection("${tab.collection}")`;
     patchShell(tab.id, {
-      text: isAgg
-        ? `db.${coll}.aggregate(${pipelineText()})`
-        : `db.${coll}.find(${d.filter.trim() || "{}"})${d.sort.trim() ? `.sort(${d.sort})` : ""}${
-            d.projection.trim() ? `.project(${d.projection})` : ""
-          }.limit(${d.limit})`,
+      text: isAgg ? `db.${coll}.aggregate(${pipelineText()})` : findAsShell(engine, tab.collection, d),
     });
     setTabMode(tab.id, "shell");
   };
@@ -166,10 +174,12 @@ export function Dock({ tab }: { tab: Tab }) {
           <Search />
           Find
         </button>
-        <button className={cn("mode", isAgg && "on")} onClick={() => !isAgg && setTabMode(tab.id, "aggregate")}>
-          <Rows3 />
-          Aggregate
-        </button>
+        {!pg && (
+          <button className={cn("mode", isAgg && "on")} onClick={() => !isAgg && setTabMode(tab.id, "aggregate")}>
+            <Rows3 />
+            Aggregate
+          </button>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -186,7 +196,13 @@ export function Dock({ tab }: { tab: Tab }) {
             </button>
           </TooltipTrigger>
           <TooltipContent>
-            {advancedMode ? "Raw shell statements, one at a time" : "Raw shell statements - enables advanced mode"}
+            {pg
+              ? advancedMode
+                ? "SQL statements - scripts run top to bottom"
+                : "SQL statements - enables advanced mode"
+              : advancedMode
+                ? "Raw shell statements, one at a time"
+                : "Raw shell statements - enables advanced mode"}
           </TooltipContent>
         </Tooltip>
         <div className="r">
@@ -213,7 +229,7 @@ export function Dock({ tab }: { tab: Tab }) {
               )}
               {d.execMs !== null && <span>{d.execMs} ms</span>}
               {d.plan && (
-                <span className={cn(d.plan === "COLLSCAN" && "text-warn")} title="Winning plan">
+                <span className={cn((d.plan === "COLLSCAN" || d.plan === "Seq Scan") && "text-warn")} title={pg ? "Query plan" : "Winning plan"}>
                   {d.plan}
                 </span>
               )}
@@ -319,10 +335,20 @@ export function Dock({ tab }: { tab: Tab }) {
       ) : (
         <>
           <div className="qline" style={{ alignItems: "flex-start" }}>
+            {pg && (
+              <span className="lbl" style={{ flex: "none", paddingTop: 14 }}>
+                WHERE
+              </span>
+            )}
             <QueryInput
               value={d.filter}
               onChange={(v) => patchDocs(tab.id, { filter: v })}
-              placeholder={`{ status: "paid", total: { $gt: 100 } }   -   ObjectId(), ISODate(), new Date(), /regex/i, new RegExp() all work`}
+              placeholder={
+                pg
+                  ? "status = 'paid' AND total > 100   -   any SQL condition: ILIKE, IN (...), meta->>'plan' = 'pro', created_at > now() - interval '1 day'"
+                  : `{ status: "paid", total: { $gt: 100 } }   -   ObjectId(), ISODate(), new Date(), /regex/i, new RegExp() all work`
+              }
+              language={lang}
               fields={fields}
               ariaLabel="Filter"
               className="grow"
@@ -359,10 +385,10 @@ export function Dock({ tab }: { tab: Tab }) {
                   onClick={() => setOptionsOpen((o) => !o)}
                 >
                   <SlidersHorizontal />
-                  Sort · Project
+                  {pg ? "Order · Columns" : "Sort · Project"}
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Sort order and projection for this query</TooltipContent>
+              <TooltipContent>{pg ? "ORDER BY and the column list for this query" : "Sort order and projection for this query"}</TooltipContent>
             </Tooltip>
             <button className="btn qt" onClick={openExplain}>
               <Gauge />
@@ -397,7 +423,9 @@ export function Dock({ tab }: { tab: Tab }) {
                       Save
                     </button>
                   </div>
-                  <span className="hint">Filter, sort and projection are stored for this collection.</span>
+                  <span className="hint">
+                    {pg ? "Condition, order and columns are stored for this table." : "Filter, sort and projection are stored for this collection."}
+                  </span>
                 </div>
                 {savedQueries.length > 0 && (
                   <div className="mt-3 flex flex-col gap-px">
@@ -413,7 +441,7 @@ export function Dock({ tab }: { tab: Tab }) {
                           }}
                         >
                           <span className="n">{q.name}</span>
-                          <span className="c truncate">{q.filter || "{}"}</span>
+                          <span className="c truncate">{q.filter || (pg ? "all rows" : "{}")}</span>
                         </button>
                         <button
                           className="ico sm"
@@ -441,26 +469,23 @@ export function Dock({ tab }: { tab: Tab }) {
                 <DropdownMenuItem
                   className="gap-2"
                   onSelect={() => {
-                    const coll = /^[A-Za-z_]\w*$/.test(tab.collection)
-                      ? tab.collection
-                      : `getCollection("${tab.collection}")`;
-                    void navigator.clipboard.writeText(`db.${coll}.find(${d.filter.trim() || "{}"})`);
+                    void navigator.clipboard.writeText(findAsShell(engine, tab.collection, d));
                     toast.success("Query copied");
                   }}
                 >
-                  <Copy className="h-3.5 w-3.5" /> Copy as shell
+                  <Copy className="h-3.5 w-3.5" /> {pg ? "Copy as SQL" : "Copy as shell"}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuLabel>Bulk · {d.filter.trim() ? "current filter" : "no filter"}</DropdownMenuLabel>
-                <DropdownMenuItem className="gap-2" disabled={readOnly} onSelect={() => setBulkUpdateOpen(true)}>
-                  <Pencil className="h-3.5 w-3.5" /> Update matching documents
+                <DropdownMenuLabel>Bulk · {d.filter.trim() ? (pg ? "current condition" : "current filter") : "no filter"}</DropdownMenuLabel>
+                <DropdownMenuItem className="gap-2" disabled={readOnly || (pg && tab.meta?.kind !== undefined && !["table", "partitioned", "foreign"].includes(tab.meta.kind))} onSelect={() => setBulkUpdateOpen(true)}>
+                  <Pencil className="h-3.5 w-3.5" /> Update matching {t.docs}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   className="gap-2 text-danger focus:text-danger"
                   disabled={readOnly}
                   onSelect={() => setBulkDeleteOpen(true)}
                 >
-                  <Trash2 className="h-3.5 w-3.5" /> Delete matching documents
+                  <Trash2 className="h-3.5 w-3.5" /> Delete matching {t.docs}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -471,21 +496,23 @@ export function Dock({ tab }: { tab: Tab }) {
           </div>
           {optionsOpen && (
             <div className="qline" style={{ alignItems: "flex-start" }}>
-              <span className="lbl" style={{ flex: "none", paddingTop: 14 }}>Sort</span>
+              <span className="lbl" style={{ flex: "none", paddingTop: 14 }}>{pg ? "Order by" : "Sort"}</span>
               <QueryInput
                 value={d.sort}
                 onChange={(v) => patchDocs(tab.id, { sort: v })}
-                placeholder="{ createdAt: -1 }"
+                placeholder={pg ? "created_at DESC, id" : "{ createdAt: -1 }"}
+                language={lang}
                 fields={fields}
                 ariaLabel="Sort"
                 className="grow"
                 maxLines={4}
               />
-              <span className="lbl" style={{ flex: "none", paddingTop: 14 }}>Project</span>
+              <span className="lbl" style={{ flex: "none", paddingTop: 14 }}>{pg ? "Columns" : "Project"}</span>
               <QueryInput
                 value={d.projection}
                 onChange={(v) => patchDocs(tab.id, { projection: v })}
-                placeholder="{ name: 1, email: 1 }"
+                placeholder={pg ? "id, name, email, total * 1.2 AS gross" : "{ name: 1, email: 1 }"}
+                language={lang}
                 fields={fields}
                 ariaLabel="Projection"
                 className="grow"

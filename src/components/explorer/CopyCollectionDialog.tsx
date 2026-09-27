@@ -20,8 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useConnections } from "@/stores/connections";
-import { api, errMsg, type CopyProgress } from "@/lib/api";
+import { QueryInput } from "@/components/explorer/QueryInput";
+import { useConnections, useEngine } from "@/stores/connections";
+import { api, errMsg, writeGuard, type CopyProgress } from "@/lib/api";
+import { terms } from "@/lib/engine";
 
 interface CopyCollectionDialogProps {
   open: boolean;
@@ -45,8 +47,16 @@ export function CopyCollectionDialog({
   const nameId = useId();
   const filterId = useId();
 
-  const workspaces = useConnections((s) => s.workspaces);
+  const allWorkspaces = useConnections((s) => s.workspaces);
   const activeId = useConnections((s) => s.activeId);
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  // Copies only run between workspaces of the same engine (the backend
+  // rejects MongoDB <-> PostgreSQL).
+  const workspaces = allWorkspaces.filter(
+    (w) => (w.info.engine ?? writeGuard.engine(w.info.id)) === engine
+  );
 
   const [targetWs, setTargetWs] = useState<string>("");
   const [targetDb, setTargetDb] = useState("");
@@ -114,12 +124,12 @@ export function CopyCollectionDialog({
       });
       if (outcome.canceled) {
         toast.info(
-          `Copy canceled - ${outcome.documents} document${outcome.documents === 1 ? "" : "s"} already copied to "${trimmedName}"`
+          `Copy canceled - ${outcome.documents} ${outcome.documents === 1 ? t.doc : t.docs} already copied to "${trimmedName}"`
         );
       } else {
         const wsName = workspaces.find((w) => w.info.id === targetWs)?.info.name ?? "target";
         toast.success(
-          `Copied ${outcome.documents} document${outcome.documents === 1 ? "" : "s"} to ${wsName} / ${trimmedDb}.${trimmedName}` +
+          `Copied ${outcome.documents} ${outcome.documents === 1 ? t.doc : t.docs} to ${wsName} / ${trimmedDb}.${trimmedName}` +
             (outcome.indexes > 0
               ? ` with ${outcome.indexes} index${outcome.indexes === 1 ? "" : "es"}`
               : "")
@@ -150,9 +160,9 @@ export function CopyCollectionDialog({
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent className="max-w-[640px]">
         <DialogHeader>
-          <DialogTitle>Copy collection to...</DialogTitle>
+          <DialogTitle>Copy {t.coll} to...</DialogTitle>
           <DialogDescription>
-            {database}.{source} · to any open connection, streamed in batches
+            {database}.{source} · to any open {pg ? "PostgreSQL" : "MongoDB"} connection, streamed in batches
           </DialogDescription>
         </DialogHeader>
 
@@ -181,7 +191,7 @@ export function CopyCollectionDialog({
 
           <div className="two">
             <div className="fld">
-              <label htmlFor={dbListId}>Target database</label>
+              <label htmlFor={dbListId}>Target {t.db}</label>
               <input
                 id={dbListId}
                 className="in"
@@ -199,7 +209,7 @@ export function CopyCollectionDialog({
               </datalist>
             </div>
             <div className="fld">
-              <label htmlFor={nameId}>New collection name</label>
+              <label htmlFor={nameId}>New {t.coll} name</label>
               <input
                 id={nameId}
                 className="in"
@@ -212,28 +222,50 @@ export function CopyCollectionDialog({
             </div>
           </div>
 
-          <div className="fld">
-            <label htmlFor={filterId}>Filter</label>
-            <input
-              id={filterId}
-              className="in"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder='{ status: "active" }'
-              disabled={busy}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <div className="hint">Optional, copies matching documents only.</div>
-          </div>
+          {pg ? (
+            <div className="fld">
+              <label>WHERE</label>
+              <QueryInput
+                value={filter}
+                onChange={(v) => !busy && setFilter(v)}
+                placeholder="status = 'active'"
+                language="pgsql"
+                ariaLabel="WHERE condition"
+                maxLines={4}
+              />
+              <div className="hint">Optional SQL condition, copies matching rows only.</div>
+            </div>
+          ) : (
+            <div className="fld">
+              <label htmlFor={filterId}>Filter</label>
+              <input
+                id={filterId}
+                className="in"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder='{ status: "active" }'
+                disabled={busy}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <div className="hint">Optional, copies matching documents only.</div>
+            </div>
+          )}
 
           <CheckRow on={copyIndexes} onChange={setCopyIndexes} disabled={busy}>
-            Copy indexes
+            {pg ? "Recreate indexes (other than the primary key)" : "Copy indexes"}
           </CheckRow>
+
+          {pg && (
+            <div className="hint">
+              The target table must not exist yet. It gets the same columns, types, NOT NULL and primary key;
+              defaults, sequences, foreign keys and triggers are not copied. A missing schema is created.
+            </div>
+          )}
 
           {sameTarget && (
             <div className="notice dgr">
-              Source and target are the same collection - change the connection, database, or name.
+              Source and target are the same {t.coll} - change the connection, {t.db}, or name.
             </div>
           )}
 
@@ -243,7 +275,7 @@ export function CopyCollectionDialog({
               <div className="min-w-0 flex-1">
                 <div className="mono tabular-nums">
                   {progress.copied.toLocaleString()}
-                  {progress.total ? ` / ${progress.total.toLocaleString()}` : ""} documents copied
+                  {progress.total ? ` / ${progress.total.toLocaleString()}` : ""} {t.docs} copied
                 </div>
                 <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-panel-2">
                   {pct === null ? (

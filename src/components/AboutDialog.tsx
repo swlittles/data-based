@@ -39,7 +39,7 @@ export function AboutDialog({ open, onOpenChange, onWhatsNew }: AboutDialogProps
     ["Version", <span className="pill acc">v{version || "?"}</span>],
     ["Platform", env || "-"],
     ["Engine", "Tauri 2 · Rust · React"],
-    ["Server", active ? `MongoDB ${active.serverVersion}` : "not connected"],
+    ["Server", active ? `${active.engine === "postgres" ? "PostgreSQL" : "MongoDB"} ${active.serverVersion}` : "not connected"],
     ["Licence", "MIT"],
     ["Updates", "signed builds from GitHub releases"],
   ];
@@ -69,7 +69,7 @@ export function AboutDialog({ open, onOpenChange, onWhatsNew }: AboutDialogProps
               <BrandTile size={96} />
               <div className="flex flex-col items-center gap-2">
                 <h2 className="font-display text-[40px] font-semibold leading-none tracking-[-0.03em] text-text">Mongo Bongo</h2>
-                <p className="max-w-[220px] text-[13px] leading-snug text-text-2">The free, no-nonsense MongoDB client.</p>
+                <p className="max-w-[240px] text-[13px] leading-snug text-text-2">The free, no-nonsense MongoDB and PostgreSQL client.</p>
               </div>
             </div>
             <div className="absolute inset-x-0 bottom-5 font-mono text-[10px] tracking-[0.14em] text-text-3">

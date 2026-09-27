@@ -2,6 +2,7 @@ mod ai;
 mod commands;
 mod crypto;
 mod error;
+mod pg;
 mod portable;
 mod profiles;
 mod shell;
@@ -138,6 +139,9 @@ pub fn run() {
             commands::export_collection,
             commands::import_documents,
             commands::run_shell,
+            commands::table_meta,
+            commands::schema_meta,
+            commands::sql_query,
             ai::ai_status,
             ai::set_ai_key,
             ai::ai_chat,

@@ -1,10 +1,11 @@
 import { errMsg } from "@/lib/api";
 
 /** True when the server refused a command because the user lacks a privilege
- *  (MongoDB error code 13, "not authorized on <db> to execute command"). */
+ *  (MongoDB error code 13, "not authorized on <db> to execute command";
+ *  PostgreSQL "permission denied ..." / "must be superuser ..."). */
 export function isUnauthorized(e: unknown): boolean {
   const m = errMsg(e);
-  return /\(Unauthorized\)|code 13\b|not authorized|requires authentication|Unauthorized/i.test(m);
+  return /\(Unauthorized\)|code 13\b|not authorized|requires authentication|Unauthorized|permission denied|must be superuser|must be a member of/i.test(m);
 }
 
 /** Short, human version of a driver error: strips the echoed command body and

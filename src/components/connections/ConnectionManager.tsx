@@ -224,6 +224,9 @@ export function ConnectionManager() {
                             <div className="min-w-0 flex-1">
                               <div className="hstack">
                                 <span className="truncate text-[13px] font-medium">{p.name}</span>
+                                <span className="pill" title={p.engine === "postgres" ? "PostgreSQL" : "MongoDB"}>
+                                  {p.engine === "postgres" ? "PG" : "Mongo"}
+                                </span>
                                 {p.access === "production" && <span className="pill dgr">production</span>}
                                 {p.access === "readonly" && <span className="pill warn">read-only</span>}
                                 {p.srv && <span className="pill">SRV</span>}

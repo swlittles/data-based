@@ -17,18 +17,22 @@ import { CodeEditor } from "@/components/CodeEditor";
 import { api, errMsg, type Doc } from "@/lib/api";
 import { previewValue } from "@/lib/diff";
 import { runExport } from "@/lib/files";
+import { identityFor, rowIdText, sqlIdent, terms } from "@/lib/engine";
 import { useSettings } from "@/stores/settings";
+import { useEngine } from "@/stores/connections";
 
 /**
  * Bulk update / delete against the tab's current filter, with an
  * affected-document preview (count + sample ids) before anything runs.
+ * PostgreSQL: the filter is a WHERE condition and the update a SET list.
  */
 
 interface BulkProps {
   open: boolean;
   database: string;
   collection: string;
-  /** The documents tab's current filter (mongosh-flavored). */
+  /** The documents tab's current filter (mongosh-flavored, or a SQL WHERE
+   *  condition for PostgreSQL). */
   filter: string;
   onOpenChange: (open: boolean) => void;
   /** Refresh the documents view after a successful mutation. */
@@ -51,6 +55,10 @@ function AffectedPreview({
   const [exact, setExact] = useState(true);
   const [sample, setSample] = useState<Doc[]>([]);
   const [loading, setLoading] = useState(false);
+  const engine = useEngine();
+  const t = terms(engine);
+  // Sample ids: `_id` for MongoDB, the primary key for PostgreSQL.
+  const [idText, setIdText] = useState<(d: Doc) => string>(() => (d: Doc) => previewValue(d._id));
 
   useEffect(() => {
     if (!active) return;
@@ -60,22 +68,26 @@ function AffectedPreview({
     setSample([]);
     void (async () => {
       try {
+        let projection = "{ _id: 1 }";
+        let label = (d: Doc) => previewValue(d._id);
+        if (engine === "postgres") {
+          const meta = await api.tableMeta(database, collection).catch(() => null);
+          const ident = identityFor(engine, meta);
+          projection = ident.key.map(sqlIdent).join(", ");
+          label = ident.key.length ? (d: Doc) => rowIdText(d, ident) : () => "";
+        }
         const [c, page] = await Promise.all([
           api.countDocuments(database, collection, filter),
-          api.findDocuments({
-            database,
-            collection,
-            filter,
-            sort: "",
-            projection: "{ _id: 1 }",
-            limit: 5,
-            skip: 0,
-          }),
+          // No primary key: nothing useful to sample.
+          projection
+            ? api.findDocuments({ database, collection, filter, sort: "", projection, limit: 5, skip: 0 })
+            : Promise.resolve({ docs: [] as Doc[] }),
         ]);
         if (stale) return;
         setCount(c.count ?? null);
         setExact(c.exact);
         setSample(page.docs);
+        setIdText(() => label);
       } catch {
         if (!stale) setCount(null);
       } finally {
@@ -85,14 +97,14 @@ function AffectedPreview({
     return () => {
       stale = true;
     };
-  }, [active, database, collection, filter]);
+  }, [active, database, collection, filter, engine]);
 
   return (
     <div className="notice">
       {loading ? (
         <>
           <Loader2 className="spin" />
-          <span className="text-text-3">counting matching documents...</span>
+          <span className="text-text-3">counting matching {t.docs}...</span>
         </>
       ) : count === null ? (
         <span className="text-text-3">Match count unavailable (slow count?)</span>
@@ -100,11 +112,11 @@ function AffectedPreview({
         <div className="min-w-0 flex-1">
           <div>
             <b className="mono font-semibold tabular-nums text-text">{count.toLocaleString()}</b>
-            {!exact && "+"} document{count === 1 ? "" : "s"} will be affected
+            {!exact && "+"} {count === 1 ? t.doc : t.docs} will be affected
           </div>
           {sample.length > 0 && (
             <div className="mt-1 truncate font-mono text-[10.5px] text-text-3">
-              e.g. <span className="oi">{sample.map((d) => previewValue(d._id)).join(", ")}</span>
+              e.g. <span className="oi">{sample.map(idText).join(", ")}</span>
             </div>
           )}
         </div>
@@ -121,22 +133,27 @@ export function BulkUpdateDialog({
   onOpenChange,
   onDone,
 }: BulkProps) {
-  const [update, setUpdate] = useState("{\n  $set: {\n    \n  }\n}");
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  const starter = pg ? "" : "{\n  $set: {\n    \n  }\n}";
+  const [update, setUpdate] = useState(starter);
   const [busy, setBusy] = useState(false);
+  const emptyFilter = !filter.trim() || (!pg && filter.trim() === "{}");
 
   useEffect(() => {
     if (open) {
-      setUpdate("{\n  $set: {\n    \n  }\n}");
+      setUpdate(starter);
       setBusy(false);
     }
-  }, [open]);
+  }, [open, starter]);
 
   const run = async () => {
     setBusy(true);
     try {
       const r = await api.bulkUpdate(database, collection, filter, update);
       toast.success(
-        `Updated ${r.modified.toLocaleString()} of ${r.matched.toLocaleString()} matched document${r.matched === 1 ? "" : "s"} · ${r.execMs}ms`
+        `Updated ${r.modified.toLocaleString()} of ${r.matched.toLocaleString()} matched ${r.matched === 1 ? t.doc : t.docs} · ${r.execMs}ms`
       );
       onDone();
       onOpenChange(false);
@@ -153,20 +170,24 @@ export function BulkUpdateDialog({
         <DialogHeader>
           <DialogTitle>Bulk update</DialogTitle>
           <DialogDescription>
-            {database}.{collection} · operator update on every document matching the current filter
+            {pg
+              ? `${database}.${collection} · UPDATE ... SET on every row matching the current WHERE`
+              : `${database}.${collection} · operator update on every document matching the current filter`}
           </DialogDescription>
         </DialogHeader>
 
         <DialogBody>
           <div className="fld">
-            <label>Filter</label>
+            <label>{pg ? "WHERE" : "Filter"}</label>
             <input
               className="in"
-              value={filter.trim() || "{ }"}
+              value={filter.trim() || (pg ? "(none)" : "{ }")}
               readOnly
               tabIndex={-1}
             />
-            {!filter.trim() && <div className="hint">Empty filter, matches every document.</div>}
+            {emptyFilter && (
+              <div className="hint">{pg ? "No WHERE condition, matches every row." : "Empty filter, matches every document."}</div>
+            )}
           </div>
           <AffectedPreview
             database={database}
@@ -175,9 +196,24 @@ export function BulkUpdateDialog({
             active={open}
           />
           <div className="fld">
-            <label>Update</label>
-            <CodeEditor value={update} onChange={setUpdate} height={120} path="bulk/update" />
-            <div className="hint">Operator syntax: $set, $unset, $inc, ...</div>
+            <label>{pg ? "SET" : "Update"}</label>
+            <CodeEditor
+              value={update}
+              onChange={setUpdate}
+              height={120}
+              path={pg ? "bulk/update.sql" : "bulk/update"}
+              language={pg ? "pgsql" : "mongodb"}
+            />
+            <div className="hint">
+              {pg ? (
+                <>
+                  Comma-separated assignments, e.g.{" "}
+                  <span className="mono">status = 'archived', updated_at = now()</span>
+                </>
+              ) : (
+                "Operator syntax: $set, $unset, $inc, ..."
+              )}
+            </div>
           </div>
         </DialogBody>
 
@@ -185,7 +221,7 @@ export function BulkUpdateDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button disabled={busy} onClick={() => void run()}>
+          <Button disabled={busy || (pg && !update.trim())} onClick={() => void run()}>
             {busy && <Loader2 className="spin" />}
             Update matching
           </Button>
@@ -207,7 +243,10 @@ export function BulkDeleteDialog({
   const [backup, setBackup] = useState(false);
   const [busy, setBusy] = useState(false);
   const offerBackup = useSettings((s) => s.offerBackupOnDelete);
-  const emptyFilter = !filter.trim() || filter.trim() === "{}";
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
+  const emptyFilter = !filter.trim() || (!pg && filter.trim() === "{}");
 
   useEffect(() => {
     if (open) {
@@ -222,7 +261,7 @@ export function BulkDeleteDialog({
     try {
       if (offerBackup && backup) {
         const path = await save({
-          title: `Backup matching documents from ${collection}`,
+          title: `Backup matching ${t.docs} from ${collection}`,
           defaultPath: `${collection}-bulk-backup.json`,
           filters: [{ name: "JSON", extensions: ["json"] }],
         }).catch(() => null);
@@ -246,7 +285,7 @@ export function BulkDeleteDialog({
         }
       }
       const r = await api.bulkDelete(database, collection, filter);
-      toast.success(`Deleted ${r.deleted.toLocaleString()} document${r.deleted === 1 ? "" : "s"} · ${r.execMs}ms`);
+      toast.success(`Deleted ${r.deleted.toLocaleString()} ${r.deleted === 1 ? t.doc : t.docs} · ${r.execMs}ms`);
       onDone();
       onOpenChange(false);
     } catch (e) {
@@ -264,21 +303,30 @@ export function BulkDeleteDialog({
         <DialogHeader>
           <DialogTitle>Bulk delete</DialogTitle>
           <DialogDescription>
-            {database}.{collection} · every document matching the current filter
+            {database}.{collection} · every {t.doc} matching the current {pg ? "WHERE" : "filter"}
           </DialogDescription>
         </DialogHeader>
 
         <DialogBody>
           <div className="fld">
-            <label>Filter</label>
-            <input className="in" value={filter.trim() || "{ }"} readOnly tabIndex={-1} />
+            <label>{pg ? "WHERE" : "Filter"}</label>
+            <input className="in" value={filter.trim() || (pg ? "(none)" : "{ }")} readOnly tabIndex={-1} />
           </div>
           {emptyFilter ? (
             <div className="warnbox">
               <TriangleAlert />
               <div>
-                <b>The filter is empty.</b> Bulk delete refuses to wipe a whole collection. Use
-                right-click, Clear collection for that.
+                {pg ? (
+                  <>
+                    <b>There is no WHERE condition.</b> Bulk delete refuses to empty a whole table. Use
+                    right-click, Clear table for that.
+                  </>
+                ) : (
+                  <>
+                    <b>The filter is empty.</b> Bulk delete refuses to wipe a whole collection. Use
+                    right-click, Clear collection for that.
+                  </>
+                )}
               </div>
             </div>
           ) : (
@@ -286,7 +334,7 @@ export function BulkDeleteDialog({
               <div className="warnbox">
                 <TriangleAlert />
                 <div>
-                  This permanently deletes every matching document. It cannot be undone from Mongo Bongo.
+                  This permanently deletes every matching {t.doc}. It cannot be undone from Mongo Bongo.
                 </div>
               </div>
               <AffectedPreview
@@ -296,7 +344,7 @@ export function BulkDeleteDialog({
                 active={open}
               />
               <div className="fld">
-                <label htmlFor="bulk-delete-confirm">Type the collection name to confirm</label>
+                <label htmlFor="bulk-delete-confirm">Type the {t.coll} name to confirm</label>
                 <input
                   id="bulk-delete-confirm"
                   className="in"
@@ -311,7 +359,7 @@ export function BulkDeleteDialog({
               </div>
               {offerBackup && (
                 <CheckRow on={backup} onChange={setBackup} disabled={busy}>
-                  Export the matching documents to a JSON file first
+                  Export the matching {t.docs} to a JSON file first
                 </CheckRow>
               )}
             </>

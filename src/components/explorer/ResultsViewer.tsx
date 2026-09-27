@@ -24,6 +24,7 @@ import { ValueTree } from "@/components/explorer/ValueTree";
 import { idLabel, kindOf, leafText, toPlainJson, toShellText, type BsonKind } from "@/lib/bson";
 import type { Doc } from "@/lib/api";
 import type { ViewMode } from "@/stores/explorer";
+import { MONGO_IDENTITY, canAddress, docText, rowId, rowKey, rowLabel, shortType, type RowIdentity } from "@/lib/engine";
 import { cn } from "@/lib/utils";
 
 interface FieldPreview {
@@ -47,8 +48,8 @@ export interface DocSelection {
   onToggleAll: (keys: string[], on: boolean) => void;
 }
 
-export const docSelectionKey = (doc: Doc): string | null =>
-  "_id" in doc ? JSON.stringify(doc._id) : null;
+export const docSelectionKey = (doc: Doc, ident: RowIdentity = MONGO_IDENTITY): string | null =>
+  rowKey(doc, ident);
 
 const copyText = async (text: string, label: string) => {
   await navigator.clipboard.writeText(text);
@@ -62,15 +63,19 @@ const copyText = async (text: string, label: string) => {
 function DocContextMenu({
   doc,
   actions,
+  ident,
   asChild,
   children,
 }: {
   doc: Doc;
   actions: DocActions;
+  ident: RowIdentity;
   asChild?: boolean;
   children: ReactNode;
 }) {
-  const canMutate = "_id" in doc;
+  const canMutate = canAddress(doc, ident);
+  const pg = ident.engine === "postgres";
+  const id = rowId(doc, ident);
   return (
     // modal={false}: items open dialogs; a modal menu would leave
     // pointer-events stuck on <body> (see memory: radix-menu-dialog-freeze).
@@ -91,15 +96,24 @@ function DocContextMenu({
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => void copyText(toShellText(doc), "Document")}>
-          <Copy /> Copy document
+        <ContextMenuItem onSelect={() => void copyText(docText(doc, ident.engine), pg ? "Row" : "Document")}>
+          <Copy /> {pg ? "Copy row" : "Copy document"}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => void copyText(toPlainJson(doc), "Document")}>
-          <Copy /> Copy as JSON
-        </ContextMenuItem>
-        {"_id" in doc && (
-          <ContextMenuItem onSelect={() => void copyText(toShellText(doc._id), "_id")}>
-            <Copy /> Copy _id
+        {!pg && (
+          <ContextMenuItem onSelect={() => void copyText(toPlainJson(doc), "Document")}>
+            <Copy /> Copy as JSON
+          </ContextMenuItem>
+        )}
+        {id !== undefined && (
+          <ContextMenuItem
+            onSelect={() =>
+              void copyText(
+                pg ? (ident.key.length === 1 ? String((id as Doc)[ident.key[0]]) : JSON.stringify(id)) : toShellText(id),
+                pg ? "Key" : "_id"
+              )
+            }
+          >
+            <Copy /> {pg ? `Copy ${ident.key.join(", ")}` : "Copy _id"}
           </ContextMenuItem>
         )}
         {actions.onDelete && canMutate && (
@@ -124,14 +138,16 @@ const DocCard = memo(function DocCard({
   index,
   actions,
   active,
+  ident,
 }: {
   doc: Doc;
   index: number;
   actions: DocActions;
   active: boolean;
+  ident: RowIdentity;
 }) {
   return (
-    <DocContextMenu doc={doc} actions={actions} asChild>
+    <DocContextMenu doc={doc} actions={actions} ident={ident} asChild>
       <div
         className={cn(
           "group rounded-[var(--r)] border bg-panel transition-colors",
@@ -144,7 +160,7 @@ const DocCard = memo(function DocCard({
           onClick={() => actions.onView(doc)}
         >
           <span className="tabular-nums">#{index + 1}</span>
-          <span className="truncate text-text-2">{idLabel(doc)}</span>
+          <span className="truncate text-text-2">{ident.engine === "mongo" ? idLabel(doc) : rowLabel(doc, ident)}</span>
           <div className="flex-1" />
           <span className="opacity-0 transition-opacity group-hover:opacity-100">open ›</span>
         </div>
@@ -247,16 +263,20 @@ function TableView({
   actions,
   selection,
   activeKey,
+  ident,
+  columnTypes,
 }: {
   docs: Doc[];
   actions: DocActions;
   selection?: DocSelection;
   activeKey?: string | null;
+  ident: RowIdentity;
+  columnTypes?: Record<string, string>;
 }) {
   const [preview, setPreview] = useState<FieldPreview | null>(null);
   const selectableKeys = useMemo(
-    () => docs.map(docSelectionKey).filter((k): k is string => k !== null),
-    [docs]
+    () => (ident.editable ? docs.map((d) => docSelectionKey(d, ident)).filter((k): k is string => k !== null) : []),
+    [docs, ident]
   );
   const allSelected =
     selection !== undefined && selectableKeys.length > 0 && selectableKeys.every((k) => selection.selected.has(k));
@@ -275,15 +295,23 @@ function TableView({
         types.set(key, m);
       }
     }
-    const keys = [...freq.keys()].filter((k) => k !== "_id");
-    keys.sort((a, b) => freq.get(b)! - freq.get(a)! || a.localeCompare(b));
-    const ordered = freq.has("_id") ? ["_id", ...keys] : keys;
+    let ordered: string[];
+    if (ident.engine === "postgres") {
+      // Rows share one column list - keep the table's (or query's) order.
+      ordered = [...freq.keys()];
+    } else {
+      const keys = [...freq.keys()].filter((k) => k !== "_id");
+      keys.sort((a, b) => freq.get(b)! - freq.get(a)! || a.localeCompare(b));
+      ordered = freq.has("_id") ? ["_id", ...keys] : keys;
+    }
     return ordered.map((name) => {
       const m = types.get(name)!;
       const top = [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
-      return { name, type: top ? TYPE_ABBR[top] ?? top : "" };
+      // Postgres tables know their declared column types - show those.
+      const declared = columnTypes?.[name];
+      return { name, type: declared ? shortType(declared) : top ? TYPE_ABBR[top] ?? top : "" };
     });
-  }, [docs]);
+  }, [docs, ident.engine, columnTypes]);
 
   return (
     <div className="tw">
@@ -311,11 +339,11 @@ function TableView({
         </thead>
         <tbody>
           {docs.map((doc, i) => {
-            const key = docSelectionKey(doc);
+            const key = docSelectionKey(doc, ident);
             const isSelected = !!selection && key !== null && selection.selected.has(key);
             const isActive = !!activeKey && key === activeKey;
             return (
-              <DocContextMenu key={i} doc={doc} actions={actions} asChild>
+              <DocContextMenu key={i} doc={doc} actions={actions} ident={ident} asChild>
                 <tr
                   onClick={() => actions.onView(doc)}
                   className={cn((isSelected || isActive) && "on")}
@@ -348,7 +376,7 @@ function TableView({
                           expandable
                             ? (e) => {
                                 e.stopPropagation();
-                                setPreview({ field: col.name, value, docLabel: `_id ${idLabel(doc)}` });
+                                setPreview({ field: col.name, value, docLabel: rowLabel(doc, ident) });
                               }
                             : undefined
                         }
@@ -380,6 +408,10 @@ interface ResultsViewerProps {
   selection?: DocSelection;
   /** Selection key of the document open in the drawer (highlighted). */
   activeKey?: string | null;
+  /** How rows are addressed; MongoDB `_id` by default. */
+  identity?: RowIdentity;
+  /** Declared column types (Postgres) for the table header. */
+  columnTypes?: Record<string, string>;
 }
 
 export const ResultsViewer = memo(function ResultsViewer({
@@ -389,6 +421,8 @@ export const ResultsViewer = memo(function ResultsViewer({
   emptyText,
   selection,
   activeKey,
+  identity = MONGO_IDENTITY,
+  columnTypes,
 }: ResultsViewerProps) {
   if (docs.length === 0) {
     return (
@@ -398,13 +432,30 @@ export const ResultsViewer = memo(function ResultsViewer({
     );
   }
 
-  if (view === "table") return <TableView docs={docs} actions={actions} selection={selection} activeKey={activeKey} />;
+  if (view === "table")
+    return (
+      <TableView
+        docs={docs}
+        actions={actions}
+        selection={selection}
+        activeKey={activeKey}
+        ident={identity}
+        columnTypes={columnTypes}
+      />
+    );
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="flex flex-col gap-2 p-[calc(var(--pad)-8px)]">
         {docs.map((doc, i) => (
-          <DocCard key={i} doc={doc} index={i} actions={actions} active={!!activeKey && docSelectionKey(doc) === activeKey} />
+          <DocCard
+            key={i}
+            doc={doc}
+            index={i}
+            actions={actions}
+            ident={identity}
+            active={!!activeKey && docSelectionKey(doc, identity) === activeKey}
+          />
         ))}
       </div>
     </div>

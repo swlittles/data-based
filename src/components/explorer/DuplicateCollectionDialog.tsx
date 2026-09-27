@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { api, errMsg } from "@/lib/api";
+import { terms } from "@/lib/engine";
+import { useEngine } from "@/stores/connections";
 
 interface DuplicateCollectionDialogProps {
   open: boolean;
@@ -32,6 +34,9 @@ export function DuplicateCollectionDialog({
   const nameId = useId();
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const engine = useEngine();
+  const pg = engine === "postgres";
+  const t = terms(engine);
 
   // Prefill "<source>_backup" each time the dialog opens for a collection.
   useEffect(() => {
@@ -43,6 +48,9 @@ export function DuplicateCollectionDialog({
 
   const trimmed = name.trim();
   const canDuplicate = !busy && trimmed.length > 0 && trimmed !== source;
+  // PostgreSQL names are used verbatim (quoted), so anything other than a
+  // plain lower-case identifier has to be double-quoted in every query.
+  const needsQuoting = pg && trimmed.length > 0 && !/^[a-z_][a-z0-9_]*$/.test(trimmed);
 
   const submit = async () => {
     if (!canDuplicate) return;
@@ -50,7 +58,7 @@ export function DuplicateCollectionDialog({
     try {
       const { documents, indexes } = await api.duplicateCollection(database, source, trimmed);
       toast.success(
-        `Duplicated to "${trimmed}" - ${documents} document${documents === 1 ? "" : "s"}` +
+        `Duplicated to "${trimmed}" - ${documents} ${documents === 1 ? t.doc : t.docs}` +
           (indexes > 0 ? `, ${indexes} index${indexes === 1 ? "" : "es"}` : "")
       );
       onDuplicated(trimmed);
@@ -66,7 +74,7 @@ export function DuplicateCollectionDialog({
     <Dialog open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <DialogContent className="max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>Duplicate collection</DialogTitle>
+          <DialogTitle>Duplicate {t.coll}</DialogTitle>
           <DialogDescription>
             {database}.{source}
           </DialogDescription>
@@ -74,11 +82,20 @@ export function DuplicateCollectionDialog({
 
         <DialogBody>
           <p className="text-[12.5px] leading-relaxed text-text-2">
-            Copy all documents and indexes of <span className="mono text-text">{source}</span> into a new
-            collection.
+            {pg ? (
+              <>
+                Create a new table like <span className="mono text-text">{source}</span> (columns, defaults,
+                constraints, indexes) in the same schema and copy all of its rows.
+              </>
+            ) : (
+              <>
+                Copy all documents and indexes of <span className="mono text-text">{source}</span> into a new
+                collection.
+              </>
+            )}
           </p>
           <div className="fld">
-            <label htmlFor={nameId}>New collection name</label>
+            <label htmlFor={nameId}>New {t.coll} name</label>
             <input
               id={nameId}
               className={trimmed === source ? "in dgr" : "in"}
@@ -91,6 +108,13 @@ export function DuplicateCollectionDialog({
               autoFocus
             />
             {trimmed === source && <span className="hint text-danger">Pick a name different from the source.</span>}
+            {pg && trimmed !== source && (
+              <span className="hint">
+                {needsQuoting
+                  ? `Used exactly as typed - SQL will need "${trimmed}" in double quotes. Lower-case letters, digits and _ avoid that.`
+                  : "Lower-case letters, digits and _ keep the name usable in SQL without quotes."}
+              </span>
+            )}
           </div>
         </DialogBody>
 

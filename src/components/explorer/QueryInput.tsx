@@ -21,6 +21,8 @@ interface QueryInputProps {
   /** The editor grows with its content up to this many lines, then scrolls. */
   maxLines?: number;
   autoFocus?: boolean;
+  /** Monaco language id: "mongodb" (default) or "pgsql". */
+  language?: string;
 }
 
 /**
@@ -37,6 +39,7 @@ export function QueryInput({
   ariaLabel,
   maxLines = 10,
   autoFocus,
+  language = "mongodb",
 }: QueryInputProps) {
   const { theme, resolved } = useTheme();
   const fieldsRef = useRef(fields);
@@ -79,7 +82,7 @@ export function QueryInput({
       <div className="min-w-0 flex-1" style={{ height }}>
         <Editor
           height={height}
-          language="mongodb"
+          language={language}
           theme="mongo-bongo"
           value={value}
           onChange={(v) => onChange(v ?? "")}

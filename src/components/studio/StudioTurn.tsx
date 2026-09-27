@@ -29,8 +29,10 @@ import { Chart, ChartKindToggle } from "@/components/studio/Chart";
 import { ResultsViewer } from "@/components/explorer/ResultsViewer";
 import { api, errMsg, type Doc } from "@/lib/api";
 import { addUsage, formatUsage, summarizeResults, type ChartKind } from "@/lib/ai";
+import { terms } from "@/lib/engine";
 import { chartFromDocs, docsToCsv } from "@/lib/studio";
 import { useAi } from "@/stores/ai";
+import { useEngine } from "@/stores/connections";
 import type { ChatTurn } from "@/stores/chat";
 import { cn } from "@/lib/utils";
 
@@ -95,6 +97,8 @@ export const AssistantTurn = memo(function AssistantTurn({
   onViewDoc,
 }: AssistantTurnProps) {
   const shareSamples = useAi((s) => s.shareSamples);
+  const engine = useEngine();
+  const t = terms(engine);
   const [showQuery, setShowQuery] = useState(false);
   const [copied, setCopied] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
@@ -136,8 +140,8 @@ export const AssistantTurn = memo(function AssistantTurn({
         <div>
           <b>Studio is read-only.</b>{" "}
           <span className="text-text-2">
-            It answers questions about your data but never changes it. To insert, update or delete, use the
-            collection views or the shell, where writes are guarded by the workspace's edit mode.
+            It answers questions about your data but never changes it. To insert, update or delete, use the{" "}
+            {t.coll} views or the shell, where writes are guarded by the workspace's edit mode.
           </span>
         </div>
       </div>
@@ -147,7 +151,7 @@ export const AssistantTurn = memo(function AssistantTurn({
   const summarize = async () => {
     setSummarizing(true);
     try {
-      const { summary, usage } = await summarizeResults(prompt, docs);
+      const { summary, usage } = await summarizeResults(prompt, docs, engine);
       onPatch({ summary, usage: turn.usage ? addUsage(turn.usage, usage) : usage });
     } catch (e) {
       toast.error(errMsg(e));
@@ -211,12 +215,13 @@ export const AssistantTurn = memo(function AssistantTurn({
           </button>
           <button className={cn(view === "json" && "on")} onClick={() => setView("json")}>
             <FileJson2 />
-            Documents
+            {t.Docs}
           </button>
         </div>
         {view === "chart" && chart && <ChartKindToggle value={kind} onChange={(k) => onPatch({ chartType: k })} />}
         <span className="font-mono text-[11px] text-text-3">
           {turn.docCount ?? docs.length} row{(turn.docCount ?? docs.length) === 1 ? "" : "s"}
+          {turn.capped && " (capped)"}
           {turn.execMs !== undefined && ` · ${turn.execMs}ms`}
         </span>
         <div className="flex-1" />

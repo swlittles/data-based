@@ -244,7 +244,7 @@ export function AiSettings() {
         </Row>
         <Row
           label="Share sample data with the model"
-          hint="On: one sample document per collection and result rows (for summaries) are sent. Off: only collection and field names."
+          hint="On: one sample document per collection (two rows per PostgreSQL table) and result rows (for summaries) are sent. Off: only collection / table and field names."
         >
           <Switch checked={shareSamples} onCheckedChange={setShareSamples} />
         </Row>
