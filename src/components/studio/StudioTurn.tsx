@@ -30,7 +30,8 @@ import { ResultsViewer } from "@/components/explorer/ResultsViewer";
 import { api, errMsg, type Doc } from "@/lib/api";
 import { addUsage, formatUsage, summarizeResults, type ChartKind } from "@/lib/ai";
 import { terms } from "@/lib/engine";
-import { chartFromDocs, docsToCsv } from "@/lib/studio";
+import { chartFromDocs, chartKindsFor, docsToCsv } from "@/lib/studio";
+import { saveRowsAsSheet, useNumbersAvailable } from "@/lib/files";
 import { useAi } from "@/stores/ai";
 import { useEngine } from "@/stores/connections";
 import type { ChatTurn } from "@/stores/chat";
@@ -103,7 +104,12 @@ export const AssistantTurn = memo(function AssistantTurn({
   const [copied, setCopied] = useState(false);
   const [summarizing, setSummarizing] = useState(false);
   const docs = turn.docs ?? [];
-  const kind: ChartKind = turn.chartType ?? turn.plan?.chart?.type ?? "bar";
+  const numbersOk = useNumbersAvailable();
+  // Only offer the chart forms this result fits; a stored choice that no
+  // longer fits (other data) falls back to the plan's / first fitting form.
+  const kinds = useMemo(() => (turn.plan ? chartKindsFor(docs, turn.plan) : []), [docs, turn.plan]);
+  const wanted: ChartKind = turn.chartType ?? turn.plan?.chart?.type ?? "bar";
+  const kind: ChartKind = kinds.includes(wanted) ? wanted : kinds[0] ?? wanted;
   const chart = useMemo(() => (turn.plan ? chartFromDocs(docs, turn.plan, kind) : null), [docs, turn.plan, kind]);
   // null = automatic: the chart when the plan has one, else the table. Chosen
   // after the turn resolves, so a pending turn does not pin the table view.
@@ -218,7 +224,7 @@ export const AssistantTurn = memo(function AssistantTurn({
             {t.Docs}
           </button>
         </div>
-        {view === "chart" && chart && <ChartKindToggle value={kind} onChange={(k) => onPatch({ chartType: k })} />}
+        {view === "chart" && chart && <ChartKindToggle value={kind} kinds={kinds} onChange={(k) => onPatch({ chartType: k })} />}
         <span className="font-mono text-[11px] text-text-3">
           {turn.docCount ?? docs.length} row{(turn.docCount ?? docs.length) === 1 ? "" : "s"}
           {turn.capped && " (capped)"}
@@ -234,6 +240,12 @@ export const AssistantTurn = memo(function AssistantTurn({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem onClick={() => void exportRows(docs, "csv", exportName)}>CSV</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => void saveRowsAsSheet(docs, "xlsx", exportName, "Export results")}>Excel (.xlsx)</DropdownMenuItem>
+            {numbersOk && (
+              <DropdownMenuItem onClick={() => void saveRowsAsSheet(docs, "numbers", exportName, "Export results")}>
+                Numbers (.numbers)
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={() => void exportRows(docs, "json", exportName)}>JSON</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

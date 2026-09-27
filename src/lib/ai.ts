@@ -1,7 +1,8 @@
 import type { Engine } from "@/lib/api";
 import { shortType } from "@/lib/engine";
 import { api, writeGuard } from "@/lib/api";
-import { AI_NOT_READY, useAi } from "@/stores/ai";
+import { toast } from "sonner";
+import { AI_NOT_READY, DEFAULT_MODEL, useAi } from "@/stores/ai";
 
 /**
  * Prompt library for every AI feature: Studio (question -> read-only query ->
@@ -25,10 +26,32 @@ export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return { input: a.input + b.input, output: a.output + b.output, total: a.total + b.total, cost: a.cost + b.cost };
 }
 
+/** OpenRouter's wording when a model id is wrong, retired or has no provider. */
+export function isModelUnavailable(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  return /not a valid model|invalid model|no endpoints found|model\b.{0,120}\b(not found|does not exist|is unavailable|no longer available|deprecated)/i.test(m);
+}
+
+/** Models already reported as unavailable this session (one warning each). */
+const warnedModels = new Set<string>();
+
 async function chat(system: string, user: string, jsonMode: boolean): Promise<{ text: string; usage: TokenUsage }> {
   const { model, mode, configured } = useAi.getState();
   if (!configured) throw new Error(AI_NOT_READY);
-  const res = await api.aiChat({ model, system, user, jsonMode, reasoning: mode === "deep" });
+  const ask = (m: string) => api.aiChat({ model: m, system, user, jsonMode, reasoning: mode === "deep" });
+  let res;
+  try {
+    res = await ask(model);
+  } catch (e) {
+    // A pasted model id that OpenRouter doesn't know (typo, retired model):
+    // answer with the auto router instead of failing the whole feature.
+    if (model === DEFAULT_MODEL || !isModelUnavailable(e)) throw e;
+    if (!warnedModels.has(model)) {
+      warnedModels.add(model);
+      toast.warning(`"${model}" isn't available on OpenRouter - used ${DEFAULT_MODEL} instead. Change it in Settings > AI.`);
+    }
+    res = await ask(DEFAULT_MODEL);
+  }
   return {
     text: res.content,
     usage: { input: res.inputTokens, output: res.outputTokens, total: res.totalTokens, cost: res.cost ?? 0 },
@@ -58,7 +81,46 @@ function parseJson<T>(text: string): T {
 // Studio: question -> plan
 // ---------------------------------------------------------------------------
 
-export type ChartKind = "bar" | "line" | "number";
+export type ChartKind = "bar" | "column" | "stacked" | "line" | "area" | "donut" | "scatter" | "heatmap" | "number";
+
+export const CHART_KINDS: ChartKind[] = ["bar", "column", "stacked", "line", "area", "donut", "scatter", "heatmap", "number"];
+
+export interface ChartSpec {
+  type: ChartKind;
+  /** Category / time bucket (scatter: the numeric x). */
+  labelField: string;
+  /** The plotted number (scatter: y). */
+  valueField: string;
+  /** Long format: a second dimension - one series per distinct value. */
+  seriesField?: string;
+  /** Wide format: several numeric columns, one series each (same unit only). */
+  valueFields?: string[];
+  title?: string;
+}
+
+/** Validate a chart spec from the model: known type ("pie" is a donut now),
+ *  string fields, no series dimension that doesn't fit the type. */
+export function normalizeChart(chart: VizPlan["chart"]): ChartSpec | null {
+  if (!chart || typeof chart !== "object") return null;
+  const raw = String((chart as { type?: unknown }).type ?? "").toLowerCase();
+  const alias: Record<string, ChartKind> = { pie: "donut", doughnut: "donut", "stacked-bar": "stacked", stacked_bar: "stacked", grouped: "column", heat: "heatmap", kpi: "number", stat: "number" };
+  const type: ChartKind = (CHART_KINDS as string[]).includes(raw) ? (raw as ChartKind) : alias[raw] ?? "bar";
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const labelField = str(chart.labelField) ?? "";
+  const valueField = str(chart.valueField) ?? str(chart.valueFields?.[0]) ?? "";
+  if (!valueField) return null;
+  if (!labelField && type !== "number") return null;
+  const valueFields = Array.isArray(chart.valueFields)
+    ? chart.valueFields.map(str).filter((f): f is string => !!f).slice(0, 8)
+    : undefined;
+  const out: ChartSpec = { type, labelField, valueField, title: str(chart.title) };
+  const seriesField = str(chart.seriesField);
+  if (seriesField && seriesField !== labelField) out.seriesField = seriesField;
+  if (valueFields && valueFields.length > 1) out.valueFields = valueFields;
+  // A stacked chart or heatmap without a second dimension is just bars.
+  if ((type === "stacked" || type === "heatmap") && !out.seriesField && !out.valueFields) out.type = type === "stacked" ? "bar" : "column";
+  return out;
+}
 
 export interface VizPlan {
   /** "sql" = PostgreSQL: one read-only SELECT in `sql`. */
@@ -72,7 +134,7 @@ export interface VizPlan {
   projection?: string;
   limit?: number;
   stages?: { op: string; body: string }[];
-  chart?: { type: ChartKind; labelField: string; valueField: string; title?: string } | null;
+  chart?: ChartSpec | null;
   explanation: string;
   /** A follow-up that has nothing to do with the conversation so far. */
   unrelatedToConversation?: boolean;
@@ -131,7 +193,7 @@ const PLAN_SHAPE = `{
   "projection": "{ ... }",        // optional
   "limit": 100,                   // optional, max ${RESULT_LIMIT}
   "stages": [{ "op": "$match", "body": "{ ... }" }],   // aggregate only
-  "chart": { "type": "bar" | "line" | "number", "labelField": "...", "valueField": "...", "title": "..." } | null,
+  "chart": { "type": "bar" | "column" | "stacked" | "line" | "area" | "donut" | "scatter" | "heatmap" | "number", "labelField": "...", "valueField": "...", "seriesField": "...", "valueFields": ["...", "..."], "title": "..." } | null,
   "explanation": "one short sentence describing what the query does",
   "unrelatedToConversation": false,
   "writeIntent": false
@@ -140,7 +202,15 @@ const PLAN_SHAPE = `{
 const COMMON_RULES = `- READ-ONLY. If the request asks to change data (insert, add, create, update, edit, set, replace, delete, remove, drop, rename, or anything mutating), do not write a query: set "writeIntent": true and leave the query fields empty. Reading, counting, filtering and aggregating are fine.
 - Never emit $out, $merge or any stage that writes.
 - If a "Conversation so far" section is present and this request is a fresh, unrelated topic, set "unrelatedToConversation": true.
-- Charts: "bar" compares a metric across categories, "line" shows a metric over time (sort by the time field ascending), "number" is a single headline value (one result row). Use null when raw documents answer better. Project the label into a named field (or _id) and the numeric metric into another, then set chart.labelField / chart.valueField to those exact output names.
+- Charts - pick the form by the question's job:
+  "bar" (horizontal) compares a metric across categories, best for many or long category names; "column" compares a few categories or time buckets;
+  "line" is a metric over time (sort by the time bucket ascending); "area" is one metric over time where volume matters;
+  "stacked" is part-to-whole across a second dimension (e.g. revenue per month split by status); "donut" is the share of a whole across at most 6 categories;
+  "scatter" relates two numeric fields (labelField = x, valueField = y, both numbers, one row per item);
+  "heatmap" is a metric across two categorical dimensions (e.g. weekday x hour); "number" is a single headline value (one result row).
+  Several series: group by both dimensions and set "seriesField" to the second one (one row per label x series), or list same-unit metrics in "valueFields". Never mix metrics of different units in one chart.
+  Omit seriesField / valueFields for a single series. Use null when raw rows answer better.
+  Project the label into a named field (or _id) and the numeric metric into another, then set chart.labelField / chart.valueField (and seriesField) to those exact output names.
 - All filter / sort / projection / stage bodies are STRINGS of MongoDB JSON; ObjectId(...), ISODate(...) and unquoted keys are allowed.
 - Always include a $limit stage (or "limit") of at most ${RESULT_LIMIT}.
 - Only use fields that appear in the provided fields or sample documents.`;
@@ -230,11 +300,7 @@ export function normalizePlan(plan: VizPlan, multi: boolean, engine: Engine = "m
       body: typeof s.body === "string" ? s.body : JSON.stringify(s.body),
     }));
   }
-  if (out.chart) {
-    const t = String(out.chart.type);
-    out.chart = { ...out.chart, type: t === "line" || t === "number" ? t : "bar" };
-    if (!out.chart.labelField && out.chart.type !== "number") out.chart = null;
-  }
+  if (out.chart) out.chart = normalizeChart(out.chart);
   const writes = out.stages?.some((s) => WRITE_STAGES.includes(s.op.toLowerCase()));
   if (out.writeIntent || writes) return { ...out, writeIntent: true };
   if (out.kind !== "find" && out.kind !== "aggregate") {
@@ -288,7 +354,7 @@ const SQL_PLAN_SHAPE = `{
   "kind": "sql",
   "sql": "SELECT ...",            // ONE PostgreSQL query, no trailing semicolon
   "collection": "table",          // the primary table the query reads from
-  "chart": { "type": "bar" | "line" | "number", "labelField": "...", "valueField": "...", "title": "..." } | null,
+  "chart": { "type": "bar" | "column" | "stacked" | "line" | "area" | "donut" | "scatter" | "heatmap" | "number", "labelField": "...", "valueField": "...", "seriesField": "...", "valueFields": ["...", "..."], "title": "..." } | null,
   "explanation": "one short sentence describing what the query does",
   "unrelatedToConversation": false,
   "writeIntent": false
@@ -300,7 +366,15 @@ const SQL_RULES = `- READ-ONLY. If the request asks to change data (insert, add,
 - Only use tables and columns that are listed. Join along the listed foreign keys (FK: col -> table(pk)).
 - Joins, CTEs, aggregates (COUNT, SUM, AVG, GROUP BY, HAVING), FILTER clauses and window functions are all fine. Prefer aggregating in SQL over returning raw rows.
 - Give every computed output column a simple snake_case alias with AS.
-- Charts: "bar" compares a metric across categories, "line" shows a metric over time (ORDER BY the time bucket ascending), "number" is a single headline value (one result row). Use null when raw rows answer better. chart.labelField / chart.valueField are EXACT output column names (aliases).
+- Charts - pick the form by the question's job:
+  "bar" (horizontal) compares a metric across categories, best for many or long category names; "column" compares a few categories or time buckets;
+  "line" is a metric over time (ORDER BY the time bucket ascending); "area" is one metric over time where volume matters;
+  "stacked" is part-to-whole across a second dimension (e.g. revenue per month split by status); "donut" is the share of a whole across at most 6 categories;
+  "scatter" relates two numeric fields (labelField = x, valueField = y, both numbers, one row per item);
+  "heatmap" is a metric across two categorical dimensions (e.g. weekday x hour); "number" is a single headline value (one result row).
+  Several series: group by both dimensions and set "seriesField" to the second one (one row per label x series), or list same-unit metrics in "valueFields". Never mix metrics of different units in one chart.
+  Omit seriesField / valueFields for a single series. Use null when raw rows answer better.
+  chart.labelField / chart.valueField / chart.seriesField / chart.valueFields are EXACT output column names (aliases).
 - Time buckets: label them with to_char(date_trunc('day', col), 'YYYY-MM-DD') (or 'YYYY-MM', ...) so labels read cleanly. Round averages and ratios: round(avg(x)::numeric, 2).
 - Row lists and grouped results end with LIMIT ${RESULT_LIMIT} or less.
 - If a "Conversation so far" section is present and this request is a fresh, unrelated topic, set "unrelatedToConversation": true.`;
@@ -498,11 +572,7 @@ export function firstTable(sql: string): string | undefined {
 /** Normalize a SQL plan: clean SQL, detect writes, reject anything else. */
 function normalizeSqlPlan(plan: VizPlan): VizPlan {
   const out: VizPlan = { ...plan, kind: "sql", stages: undefined, filter: undefined, sort: undefined, projection: undefined };
-  if (out.chart) {
-    const t = String(out.chart.type);
-    out.chart = { ...out.chart, type: t === "line" || t === "number" ? t : "bar" };
-    if (!out.chart.labelField && out.chart.type !== "number") out.chart = null;
-  }
+  if (out.chart) out.chart = normalizeChart(out.chart);
   if (out.writeIntent) return { ...out, sql: undefined, writeIntent: true };
   if (typeof plan.sql !== "string" || !plan.sql.trim()) {
     if (plan.kind === "find" || plan.kind === "aggregate") {

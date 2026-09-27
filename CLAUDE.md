@@ -35,6 +35,9 @@ desktop client.
   component layer. Components read only the tokens (`--bg`, `--panel`, `--accent`,
   `--row`, ...) - never literal colours.
 - Two attributes on `<html>` drive everything: `data-theme` and `data-density`.
+- Chart series use `--cat-1..8` (a colour-blind-validated categorical palette, light steps on
+  light themes, dark steps on dark). Keep the slot order; one series uses `--accent`, a folded
+  tail ("Other") uses `--text-3`. Re-validate the palette against a new theme's `--panel`.
 - The mark is `<BrandMark />` (`src/components/brand/BrandMark.tsx`) and always
   paints with `currentColor`; in-app it sits on `var(--accent)`.
 
@@ -47,6 +50,14 @@ desktop client.
   `readOnly: true` so the backend rejects `$out` / `$merge`, and Postgres queries only via
   `sql_query` (a single SELECT inside a READ ONLY transaction).
 - `src/dev/mockTauri.ts` fakes OpenRouter replies so the AI UI works in `npm run dev`.
+
+## Export
+
+- `.xlsx` is written by `src-tauri/src/sheet.rs` (rust_xlsxwriter, constant memory, typed cells).
+  `.numbers` writes that xlsx to a temp file and has Numbers.app convert it via AppleScript -
+  macOS with Numbers only (`numbers_available`), one conversion at a time. `src-tauri/Info.plist`
+  carries the Automation permission text. `MB_NUMBERS=1 cargo test live_numbers` runs a real
+  conversion.
 
 ## Behaviour to preserve
 

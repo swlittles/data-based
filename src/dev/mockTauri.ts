@@ -875,6 +875,11 @@ async function invoke(cmd: string, args: Record<string, unknown> = {}): Promise<
       return [];
     case "ping_workspace":
       return 8 + Math.round(Math.random() * 30);
+    case "numbers_available":
+      // Browser preview: offer .numbers so the menus can be exercised.
+      return true;
+    case "save_spreadsheet":
+      return { rows: Array.isArray(args.rows) ? args.rows.length : 0, truncated: false };
     case "save_text_file":
       return null;
     case "db_overview": {

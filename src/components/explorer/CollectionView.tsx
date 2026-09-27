@@ -19,7 +19,7 @@ import { useConnections, useEngine } from "@/stores/connections";
 import { terms } from "@/lib/engine";
 import { useIdentity } from "@/components/explorer/useIdentity";
 import { api, type CollectionStats } from "@/lib/api";
-import { exportCollection, importDocuments } from "@/lib/files";
+import { exportCollection, exportFormats, FORMAT_META, importDocuments, useNumbersAvailable } from "@/lib/files";
 import { formatBytes, formatCount } from "@/lib/bson";
 import { cn } from "@/lib/utils";
 
@@ -54,6 +54,8 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
   const t = terms(engine);
   const ident = useIdentity(tab);
   const canInsert = !readOnly && ident.editable;
+  // Re-render once we know whether Numbers is installed (adds the option).
+  useNumbersAvailable();
   const [stats, setStats] = useState<CollectionStats | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -151,15 +153,7 @@ export const CollectionView = memo(function CollectionView({ tab, active }: { ta
                 </div>
               </div>
               <div className="p-1.5">
-                {(
-                  [
-                    ["json", "JSON", "one array, pretty printed"],
-                    ["ndjson", "NDJSON", `one ${t.doc} per line`],
-                    ["csv", "CSV", "flat columns for spreadsheets"],
-                    ["bson", "BSON", "mongodump-compatible archive"],
-                  ] as const
-                )
-                  .filter(([format]) => !(pg && format === "bson"))
+                {exportFormats().map((format) => [format, FORMAT_META[format].label, format === "ndjson" ? `one ${t.doc} per line` : FORMAT_META[format].hint] as const)
                   .map(([format, label, hint]) => (
                   <DropdownMenuItem
                     key={format}

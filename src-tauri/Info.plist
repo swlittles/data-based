@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Shown once when exporting a .numbers file: the app asks Numbers to
+       convert the .xlsx it wrote. Without this key macOS denies the request. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Mongo Bongo asks Numbers to save exported data as a .numbers file.</string>
+</dict>
+</plist>

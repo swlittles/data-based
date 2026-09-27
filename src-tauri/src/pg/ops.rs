@@ -1266,13 +1266,16 @@ pub async fn export(
     path: &str,
     cancel: &AtomicBool,
     emit: &(dyn Fn(u64, Option<u64>) + Sync),
-) -> AppResult<(u64, bool)> {
+) -> AppResult<(u64, bool, bool)> {
     use std::io::Write;
     if format == "bson" {
-        return Err(AppError::Other("BSON export is only available for MongoDB - pick JSON, NDJSON or CSV".into()));
+        return Err(AppError::Other("BSON export is only available for MongoDB - pick JSON, NDJSON, CSV or a spreadsheet".into()));
     }
     let total = count(conn, schema, table, filter).await.ok().and_then(|c| c.count);
     let query = select_sql(schema, table, filter, sort, "");
+    if crate::sheet::is_sheet_format(format) {
+        return export_sheet(conn, table, &query, format, path, total, cancel, emit).await;
+    }
     let file = std::fs::File::create(path).map_err(|e| AppError::Parse(format!("cannot write {path}: {e}")))?;
     let mut w = std::io::BufWriter::new(file);
     let mut count_written: u64 = 0;
@@ -1315,7 +1318,83 @@ pub async fn export(
     })
     .await?;
     emit(count_written, total);
-    Ok((count_written, canceled))
+    Ok((count_written, canceled, false))
+}
+
+/// `.xlsx` / `.numbers` export: rows stream from a cursor into the sheet in
+/// table column order. Returns (rows, canceled, cut short by the row limit).
+#[allow(clippy::too_many_arguments)]
+async fn export_sheet(
+    conn: &PgConn,
+    table: &str,
+    query: &str,
+    format: &str,
+    path: &str,
+    total: Option<u64>,
+    cancel: &AtomicBool,
+    emit: &(dyn Fn(u64, Option<u64>) + Sync),
+) -> AppResult<(u64, bool, bool)> {
+    use crate::sheet;
+    if format == "numbers" && !sheet::numbers_available() {
+        return Err(AppError::Other(sheet::NUMBERS_MISSING.into()));
+    }
+    let dest = std::path::PathBuf::from(path);
+    let staged = sheet::staging_path(format, &dest);
+    let limit = sheet::max_rows(format);
+    let mut writer: Option<sheet::SheetWriter> = None;
+    let mut written = 0u64;
+    let mut full = false;
+    let result = read(conn, None, async |c| {
+        let stopped = cursor_rows(c, query, cancel, |rows, cols| {
+            let w = match writer.as_mut() {
+                Some(w) => w,
+                None => writer.insert(sheet::SheetWriter::new(cols, table, limit)?),
+            };
+            for row in rows {
+                if let Value::Object(m) = row {
+                    if !w.push(&m)? {
+                        full = true;
+                        return Ok(false);
+                    }
+                    written += 1;
+                }
+            }
+            emit(written, total);
+            Ok(true)
+        })
+        .await?;
+        Ok(stopped && !full)
+    })
+    .await;
+    let canceled = match result {
+        Ok(c) => c,
+        Err(e) => return Err(e),
+    };
+    // An empty result still gets a header-only sheet.
+    let w = match writer {
+        Some(w) => w,
+        None => sheet::SheetWriter::new(Vec::new(), table, limit)?,
+    };
+    let fmt = format.to_string();
+    let (written, truncated) = tokio::task::spawn_blocking(move || -> AppResult<(u64, bool)> {
+        let out = w.save(&staged);
+        match out {
+            Ok(out) => {
+                sheet::finish(&fmt, &staged, &dest)?;
+                Ok(out)
+            }
+            Err(e) => {
+                if staged != dest {
+                    let _ = std::fs::remove_file(&staged);
+                }
+                Err(e)
+            }
+        }
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))??;
+    emit(written, total);
+    Ok((written, canceled, truncated))
 }
 
 /// Insert JSON rows in one statement. Columns are the union of keys across the
@@ -1556,7 +1635,7 @@ pub async fn copy_table(
             }
         }
     }
-    Ok(CopyOutcome { documents: copied, indexes, canceled, exec_ms: ms(started) })
+    Ok(CopyOutcome { documents: copied, indexes, canceled, truncated: false, exec_ms: ms(started) })
 }
 
 fn key_string(meta: &TableMeta, row: &Value) -> String {

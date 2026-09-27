@@ -19,6 +19,18 @@ const SEEN_KEY = "mongo-bongo-whats-new-seen";
 
 export const SLIDES: WhatsNewSlide[] = [
   {
+    version: "0.2.2",
+    title: "Charts, spreadsheets, any model",
+    tagline: "More ways to see an answer, and to take it with you.",
+    points: [
+      "Studio charts: columns, stacked bars, area, donut, scatter and heatmaps, plus several series in one chart",
+      "The chart menu only offers the forms your result fits; big series lists fold into \"Other\"",
+      "Export to Excel (.xlsx) with real numbers and dates - collections, tables, Studio results and overviews",
+      "Export to Apple Numbers (.numbers) on a Mac with Numbers installed",
+      "Paste an exact OpenRouter model id in Settings > AI; unknown models fall back to openrouter/auto",
+    ],
+  },
+  {
     version: "0.2.0",
     title: "PostgreSQL",
     tagline: "Mongo Bongo now speaks PostgreSQL too - same console, same guard rails.",

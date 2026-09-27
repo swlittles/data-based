@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { api, errMsg, type CollectionOverview, type DbOverview } from "@/lib/api";
 import { formatBytes, formatCount } from "@/lib/bson";
+import { saveRowsAsSheet, useNumbersAvailable } from "@/lib/files";
 import { terms } from "@/lib/engine";
 import { useEngine } from "@/stores/connections";
 import { cn } from "@/lib/utils";
@@ -88,37 +89,46 @@ const KIND_BADGE: Record<string, string> = {
   foreign: "foreign",
 };
 
+/** Column names and per-row values shared by the CSV and spreadsheet exports. */
+function overviewTable(rows: CollectionOverview[], pg: boolean): { head: string[]; lines: unknown[][] } {
+  const head = pg
+    ? ["table", "kind", "rowsEstimate", "avgRowBytes", "tableBytes", "totalBytes", "indexes", "indexBytes", "partitioned", "checkConstraints", "foreignKeys"]
+    : ["collection", "kind", "documents", "avgDocBytes", "dataBytes", "storageBytes", "indexes", "indexBytes", "capped", "validated", "references"];
+  const lines = rows.map((c) => [
+    c.name,
+    c.kind,
+    c.count,
+    c.avgObjSize,
+    c.size,
+    c.storageSize,
+    c.nindexes,
+    c.totalIndexSize,
+    pg ? kindOf(c) === "partitioned" : c.capped,
+    c.validated,
+    c.refs.map((r) => `${r.field}->${r.to}`).join("; "),
+  ]);
+  return { head, lines };
+}
+
 function toCsv(rows: CollectionOverview[], pg: boolean): string {
   const esc = (v: unknown) => {
     const s = v === null || v === undefined ? "" : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const head = pg
-    ? ["table", "kind", "rowsEstimate", "avgRowBytes", "tableBytes", "totalBytes", "indexes", "indexBytes", "partitioned", "checkConstraints", "foreignKeys"]
-    : ["collection", "kind", "documents", "avgDocBytes", "dataBytes", "storageBytes", "indexes", "indexBytes", "capped", "validated", "references"];
-  const lines = rows.map((c) =>
-    [
-      c.name,
-      c.kind,
-      c.count,
-      c.avgObjSize,
-      c.size,
-      c.storageSize,
-      c.nindexes,
-      c.totalIndexSize,
-      pg ? kindOf(c) === "partitioned" : c.capped,
-      c.validated,
-      c.refs.map((r) => `${r.field}->${r.to}`).join("; "),
-    ]
-      .map(esc)
-      .join(",")
-  );
-  return [head.join(","), ...lines].join("\n") + "\n";
+  const { head, lines } = overviewTable(rows, pg);
+  return [head.join(","), ...lines.map((l) => l.map(esc).join(","))].join("\n") + "\n";
+}
+
+/** Same columns as the CSV, as objects for the spreadsheet writer. */
+function sheetRows(rows: CollectionOverview[], pg: boolean): Record<string, unknown>[] {
+  const { head, lines } = overviewTable(rows, pg);
+  return lines.map((l) => Object.fromEntries(head.map((h, i) => [h, l[i] ?? null])));
 }
 
 export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollection }: DbOverviewDialogProps) {
   const pg = useEngine() === "postgres";
   const t = terms(pg ? "postgres" : "mongo");
+  const numbersOk = useNumbersAvailable();
   const columns = pg ? PG_COLUMNS : COLUMNS;
   const [data, setData] = useState<DbOverview | null>(null);
   const [loading, setLoading] = useState(false);
@@ -183,8 +193,12 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
     return out;
   }, [colls, filter, focus, sort]);
 
-  const exportAs = async (format: "csv" | "json") => {
+  const exportAs = async (format: "csv" | "json" | "xlsx" | "numbers") => {
     if (!data) return;
+    if (format === "xlsx" || format === "numbers") {
+      await saveRowsAsSheet(sheetRows(rows, pg), format, `${database}-overview`, `Export overview of ${database}`);
+      return;
+    }
     const path = await save({
       title: `Export overview of ${database}`,
       defaultPath: `${database}-overview.${format}`,
@@ -295,6 +309,8 @@ export function DbOverviewDialog({ open, database, onOpenChange, onOpenCollectio
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onSelect={() => void exportAs("csv")}>CSV (spreadsheet)</DropdownMenuItem>
+                      <DropdownMenuItem onSelect={() => void exportAs("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
+                      {numbersOk && <DropdownMenuItem onSelect={() => void exportAs("numbers")}>Numbers (.numbers)</DropdownMenuItem>}
                       <DropdownMenuItem onSelect={() => void exportAs("json")}>JSON</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
