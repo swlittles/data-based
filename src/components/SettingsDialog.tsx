@@ -138,7 +138,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                   Clear
                 </Button>
               </Row>
-              <Row label="Updates" hint="Mongo Bongo updates itself from GitHub releases">
+              <Row label="Updates" hint="Data Based updates itself from GitHub releases">
                 <Button variant="outline" size="sm" onClick={() => void checkForUpdates(true)}>
                   <RefreshCw />
                   Check for updates

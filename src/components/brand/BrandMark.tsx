@@ -1,5 +1,5 @@
 /**
- * The Mongo Bongo mark: a pair of bongo drum heads, the larger one solid and
+ * The Data Based mark: a pair of bongo drum heads, the larger one solid and
  * the smaller one at half strength. Always paints with currentColor - in-app
  * that is `var(--accent)`. `outline` is the watermark variant for empty panes.
  */

@@ -83,7 +83,7 @@ export function QueryInput({
         <Editor
           height={height}
           language={language}
-          theme="mongo-bongo"
+          theme="data-based"
           value={value}
           onChange={(v) => onChange(v ?? "")}
           onMount={handleMount}

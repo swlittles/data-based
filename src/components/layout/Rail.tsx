@@ -146,7 +146,7 @@ export function Rail() {
 
   return (
     <nav className="rail no-select" aria-label="Connections and sections">
-      <div className="mk" title="Mongo Bongo">
+      <div className="mk" title="Data Based">
         <BrandMark />
       </div>
       <div className="conns">

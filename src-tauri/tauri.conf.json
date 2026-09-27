@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Mongo Bongo",
-  "version": "0.2.2",
-  "identifier": "com.swlittles.mongobongo",
+  "productName": "Data Based",
+  "version": "0.3.0",
+  "identifier": "com.swlittles.databased",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Mongo Bongo",
+        "title": "Data Based",
         "width": 1440,
         "height": 900,
         "minWidth": 1100,
@@ -41,7 +41,7 @@
     "category": "DeveloperTool",
     "createUpdaterArtifacts": true,
     "shortDescription": "Free, lightweight, no-nonsense MongoDB and PostgreSQL client",
-    "longDescription": "Mongo Bongo is a free and open-source MongoDB and PostgreSQL desktop client. Browse data in table or document form, edit documents field by field, build aggregation pipelines, inspect indexes and schema, and run real shell statements - with credentials encrypted in your OS keychain and production connections opening read-only.",
+    "longDescription": "Data Based is a free and open-source MongoDB and PostgreSQL desktop client. Browse data in table or document form, edit documents field by field, build aggregation pipelines, inspect indexes and schema, and run real shell statements - with credentials encrypted in your OS keychain and production connections opening read-only.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

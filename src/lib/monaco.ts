@@ -1,6 +1,6 @@
 /**
  * Bundled Monaco setup: no CDN, works offline, ships with a real `mongodb`
- * language (context-aware db/collection/method tokens) and Mongo Bongo themes.
+ * language (context-aware db/collection/method tokens) and Data Based themes.
  */
 import * as monaco from "monaco-editor";
 import { loader } from "@monaco-editor/react";
@@ -421,7 +421,7 @@ function toHex(css: string, fallback: string): string {
 }
 
 /**
- * (Re)build the single Mongo Bongo Monaco theme from the live theme-kit tokens and
+ * (Re)build the single Data Based Monaco theme from the live theme-kit tokens and
  * activate it. Called on every theme change so editors re-tint with the app.
  */
 export function applyMonacoTheme(): void {
@@ -447,7 +447,7 @@ export function applyMonacoTheme(): void {
     line: toHex(token("--accent-line"), "00ED6450"),
   };
   const strip = (h: string) => h.replace("#", "").slice(0, 6);
-  monaco.editor.defineTheme("mongo-bongo", {
+  monaco.editor.defineTheme("data-based", {
     base: dark ? "vs-dark" : "vs",
     inherit: true,
     rules: [
@@ -497,7 +497,7 @@ export function applyMonacoTheme(): void {
       "editor.placeholder.foreground": c.text3,
     },
   });
-  monaco.editor.setTheme("mongo-bongo");
+  monaco.editor.setTheme("data-based");
 }
 
 export const MONO_FONT =

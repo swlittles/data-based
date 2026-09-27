@@ -127,7 +127,7 @@ export const useChat = create<ChatState>()(
         }),
     }),
     {
-      name: "mongo-bongo-chat",
+      name: "data-based-chat",
       version: 1,
       // Bounded storage: recent sessions only, capped rows per turn, and no
       // half-finished turns (a pending turn cannot resume after a restart).

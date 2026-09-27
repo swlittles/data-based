@@ -274,7 +274,7 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
                 ? `Saved: ${editing.hostSummary} (password hidden). Leave blank to keep it, or paste a new one to replace it.`
                 : pg
                   ? "Stored fully encrypted, credentials included. Works with any hosted Postgres - Neon, Supabase, Tiger Cloud, RDS, PlanetScale - sslmode and sslrootcert are honoured."
-                  : "Stored fully encrypted, credentials included. Mongo Bongo parses mongodb:// and mongodb+srv:// URIs."
+                  : "Stored fully encrypted, credentials included. Data Based parses mongodb:// and mongodb+srv:// URIs."
             }
           >
             <input
@@ -552,8 +552,8 @@ export function ConnectionForm({ editing, onDone, onCancel }: ConnectionFormProp
               <span className="hint">
                 {ssh.auth === "agent" && "Uses the keys loaded in your running ssh-agent. "}
                 {pg
-                  ? "Mongo Bongo forwards a local port through the bastion to the PostgreSQL host above; TLS still checks the real host name. "
-                  : "Mongo Bongo forwards a local port through the bastion to the MongoDB host above and connects to it directly (for a replica set, point it at the member you want). "}
+                  ? "Data Based forwards a local port through the bastion to the PostgreSQL host above; TLS still checks the real host name. "
+                  : "Data Based forwards a local port through the bastion to the MongoDB host above and connects to it directly (for a replica set, point it at the member you want). "}
                 Host keys are checked against ~/.ssh/known_hosts.
               </span>
             </>

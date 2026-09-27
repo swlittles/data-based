@@ -4,12 +4,25 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mongo Bongo</title>
+    <title>Data Based</title>
     <script>
+      // Settings saved before the rename used "mongo-bongo-" keys: copy them to
+      // "data-based-" once, before anything reads them (the originals stay).
+      try {
+        var legacy = [];
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (k && k.indexOf("mongo-bongo-") === 0) legacy.push(k);
+        }
+        legacy.forEach(function (k) {
+          var n = "data-based-" + k.slice("mongo-bongo-".length);
+          if (localStorage.getItem(n) === null) localStorage.setItem(n, localStorage.getItem(k));
+        });
+      } catch (e) {}
       // Paint the saved theme before React mounts so there is no flash.
       try {
-        var t = localStorage.getItem("mongo-bongo-theme");
-        var d = localStorage.getItem("mongo-bongo-density");
+        var t = localStorage.getItem("data-based-theme");
+        var d = localStorage.getItem("data-based-density");
         if (t) document.documentElement.setAttribute("data-theme", t);
         if (d) document.documentElement.setAttribute("data-density", d);
       } catch (e) {}

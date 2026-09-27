@@ -33,8 +33,8 @@ interface ThemeState {
   cycleTheme: () => void;
 }
 
-const THEME_KEY = "mongo-bongo-theme";
-const DENSITY_KEY = "mongo-bongo-density";
+const THEME_KEY = "data-based-theme";
+const DENSITY_KEY = "data-based-density";
 
 const ThemeCtx = createContext<ThemeState>({
   theme: "mongo-dark",

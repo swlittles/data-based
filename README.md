@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="public/icon.svg" width="104" alt="Mongo Bongo" />
+  <img src="public/icon.svg" width="104" alt="Data Based" />
 </p>
 
-<h1 align="center">Mongo Bongo</h1>
+<h1 align="center">Data Based</h1>
 
 <p align="center"><b>A fast, native MongoDB and PostgreSQL desktop client.</b></p>
 

@@ -270,7 +270,7 @@ pub fn columns_of<'a>(rows: impl Iterator<Item = &'a Value>) -> Vec<String> {
 /// that Numbers converts.
 pub fn staging_path(format: &str, dest: &Path) -> PathBuf {
     if format == "numbers" {
-        std::env::temp_dir().join(format!("mongo-bongo-export-{}.xlsx", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("data-based-export-{}.xlsx", uuid::Uuid::new_v4()))
     } else {
         dest.to_path_buf()
     }
@@ -414,7 +414,7 @@ fn convert_to_numbers(_xlsx: &Path, _dest: &Path) -> AppResult<()> {
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn numbers_error(stderr: &str) -> String {
     if stderr.contains("-1743") || stderr.to_lowercase().contains("not authorized") {
-        return "macOS blocked Mongo Bongo from controlling Numbers - allow it in System Settings > Privacy & Security > Automation, then export again".into();
+        return "macOS blocked Data Based from controlling Numbers - allow it in System Settings > Privacy & Security > Automation, then export again".into();
     }
     if stderr.contains("-128") {
         return "Numbers export was cancelled".into();

@@ -41,7 +41,7 @@ export function WhatsNewDialog({ open, onOpenChange }: WhatsNewDialogProps) {
             <BrandMark className="h-8 w-8 shrink-0 text-primary" />
             <div className="min-w-0">
               <DialogTitle>What&apos;s new</DialogTitle>
-              <DialogDescription>{version ? `Mongo Bongo v${version}` : "Mongo Bongo"} · release notes</DialogDescription>
+              <DialogDescription>{version ? `Data Based v${version}` : "Data Based"} · release notes</DialogDescription>
             </div>
           </div>
         </DialogHeader>

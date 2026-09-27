@@ -77,7 +77,7 @@ function Overview() {
     <>
       <H>The console</H>
       <P>
-        Mongo Bongo is one window with five parts. Everything is reachable with the mouse; the shortcuts on the last page
+        Data Based is one window with five parts. Everything is reachable with the mouse; the shortcuts on the last page
         get you there faster.
       </P>
       <Rows
@@ -299,7 +299,7 @@ function Ai() {
       <H>Studio</H>
       <P>
         Open <B>Studio</B> from the rail (<K>{MOD} J</K>) and ask a question in plain English. The model writes a
-        read-only query, Mongo Bongo runs it and shows the rows with a bar, line or single-number chart. Pick one
+        read-only query, Data Based runs it and shows the rows with a bar, line or single-number chart. Pick one
         collection, or <B>Whole database</B> to let the model choose collections and join them.
       </P>
       <Rows
@@ -339,7 +339,7 @@ function Safety() {
   return (
     <>
       <H>Guard rails</H>
-      <P>Mongo Bongo assumes the database in front of you matters. Destructive actions are slow on purpose.</P>
+      <P>Data Based assumes the database in front of you matters. Destructive actions are slow on purpose.</P>
       <Rows
         rows={[
           ["Drop and clear", "Dropping a database or collection, or clearing a collection, asks you to type its name and offers an export first. The same goes for PostgreSQL tables and views."],

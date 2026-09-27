@@ -334,7 +334,7 @@ export function BulkDeleteDialog({
               <div className="warnbox">
                 <TriangleAlert />
                 <div>
-                  This permanently deletes every matching {t.doc}. It cannot be undone from Mongo Bongo.
+                  This permanently deletes every matching {t.doc}. It cannot be undone from Data Based.
                 </div>
               </div>
               <AffectedPreview

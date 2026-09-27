@@ -481,7 +481,7 @@ fn build_config(u: &PgUri, tunnel_port: Option<u16>) -> AppResult<tokio_postgres
         other => return Err(AppError::Other(format!("unknown sslmode '{other}'"))),
     });
     cfg.connect_timeout(Duration::from_secs(10));
-    cfg.application_name(format!("Mongo Bongo {}", env!("CARGO_PKG_VERSION")));
+    cfg.application_name(format!("Data Based {}", env!("CARGO_PKG_VERSION")));
     cfg.keepalives_idle(Duration::from_secs(60));
 
     let mut extra = String::new();

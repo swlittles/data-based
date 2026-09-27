@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 let cachedEnv: string | null = null;
 
-/** "Mongo Bongo 0.1.0 · macOS · arm64" line, resolved once. */
+/** "Data Based 0.1.0 · macOS · arm64" line, resolved once. */
 export function useVersionLine() {
   const [line, setLine] = useState<{ version: string; env: string }>({ version: "", env: cachedEnv ?? "" });
   useEffect(() => {
@@ -73,7 +73,7 @@ export function Blank({
       )}
       {actions && <div className="acts">{actions}</div>}
       <div className="ver">
-        <b>Mongo Bongo {version}</b>
+        <b>Data Based {version}</b>
         {env && ` · ${env}`}
         <span>{server}</span>
       </div>

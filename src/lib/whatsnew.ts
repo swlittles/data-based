@@ -15,9 +15,19 @@ export interface WhatsNewSlide {
   points: string[];
 }
 
-const SEEN_KEY = "mongo-bongo-whats-new-seen";
+const SEEN_KEY = "data-based-whats-new-seen";
 
 export const SLIDES: WhatsNewSlide[] = [
+  {
+    version: "0.3.0",
+    title: "Data Based",
+    tagline: "Mongo Bongo is now Data Based - one name for MongoDB and PostgreSQL.",
+    points: [
+      "New name everywhere: the app, the Dock, menus and installers",
+      "Your connections, encryption key, AI key, chats, theme and saved queries moved across on first launch",
+      "Updates now come from github.com/swlittles/data-based",
+    ],
+  },
   {
     version: "0.2.2",
     title: "Charts, spreadsheets, any model",
@@ -33,7 +43,7 @@ export const SLIDES: WhatsNewSlide[] = [
   {
     version: "0.2.0",
     title: "PostgreSQL",
-    tagline: "Mongo Bongo now speaks PostgreSQL too - same console, same guard rails.",
+    tagline: "PostgreSQL joins MongoDB - same console, same guard rails.",
     points: [
       "Connect to any Postgres: Neon, Supabase, Tiger Cloud, RDS / Aurora, PlanetScale, Cloud SQL, Azure, your own server",
       "Schemas and tables in the picker; rows in the Table and Documents views, edited by primary key",
@@ -46,7 +56,7 @@ export const SLIDES: WhatsNewSlide[] = [
   },
   {
     version: "0.1.0",
-    title: "Mongo Bongo",
+    title: "Data Based",
     tagline: "First build.",
     points: [
       "Table, Documents, Schema and Indexes views for any collection",

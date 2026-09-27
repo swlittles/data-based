@@ -79,9 +79,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: "Mongo Bongo v__VERSION__"
+          releaseName: "Data Based v__VERSION__"
           releaseBody: |
-            ## Mongo Bongo - the free, no-nonsense MongoDB client
+            ## Data Based - the free, no-nonsense MongoDB and PostgreSQL client
 
             Download the build for your platform below. Existing installs
             update themselves automatically.

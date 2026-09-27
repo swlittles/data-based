@@ -1,4 +1,4 @@
-# Releasing Mongo Bongo
+# Releasing Data Based
 
 Releases are fully automated: **push to the `production` branch** and GitHub
 Actions builds macOS (Apple Silicon), Windows, and Linux bundles,
@@ -11,8 +11,8 @@ The updater artifacts must be signed. The keypair was generated locally with
 `tauri signer generate` (with a password - GitHub cannot store an empty
 secret, so passwordless keys do not work in CI):
 
-- **Private key**: `~/.tauri/mongo-bongo.key` *(on the machine that generated it - never commit this file)*
-- **Key password**: `~/.tauri/mongo-bongo.key.password`
+- **Private key**: `~/.tauri/data-based.key` *(on the machine that generated it - never commit this file)*
+- **Key password**: `~/.tauri/data-based.key.password`
 - **Public key**: already embedded in `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`
 
 Add two secrets under **GitHub repo → Settings → Secrets and variables →
@@ -20,13 +20,13 @@ Actions**:
 
 | Secret | Value |
 |---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | The full contents of `~/.tauri/mongo-bongo.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The contents of `~/.tauri/mongo-bongo.key.password` |
+| `TAURI_SIGNING_PRIVATE_KEY` | The full contents of `~/.tauri/data-based.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The contents of `~/.tauri/data-based.key.password` |
 
 ```bash
 # convenient way to add them with the GitHub CLI
-gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/mongo-bongo.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD < ~/.tauri/mongo-bongo.key.password
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/data-based.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD < ~/.tauri/data-based.key.password
 ```
 
 > ⚠️ Back up both the private key **and its password** somewhere safe

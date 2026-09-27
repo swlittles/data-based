@@ -61,7 +61,7 @@ export function Titlebar() {
           </>
         ) : (
           <>
-            <b>Mongo Bongo</b>· {status === "connecting" ? "connecting" : "not connected"}
+            <b>Data Based</b>· {status === "connecting" ? "connecting" : "not connected"}
           </>
         )}
       </div>

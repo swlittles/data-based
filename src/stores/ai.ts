@@ -66,7 +66,7 @@ export const useAi = create<AiState>()(
       },
     }),
     {
-      name: "mongo-bongo-ai",
+      name: "data-based-ai",
       version: 1,
       partialize: (s) => ({ model: s.model, mode: s.mode, shareSamples: s.shareSamples }),
     }

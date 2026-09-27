@@ -100,6 +100,6 @@ export const useSettings = create<SettingsState>()(
           },
         })),
     }),
-    { name: "mongo-bongo-settings", version: 2 }
+    { name: "data-based-settings", version: 2 }
   )
 );

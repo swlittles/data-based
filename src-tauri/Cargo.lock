@@ -1132,6 +1132,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "data-based"
+version = "0.3.0"
+dependencies = [
+ "aes-gcm 0.10.3",
+ "argon2 0.5.3",
+ "base64 0.22.1",
+ "chrono",
+ "deadpool-postgres",
+ "futures",
+ "json5",
+ "keyring",
+ "mongodb",
+ "regex",
+ "reqwest 0.12.28",
+ "russh",
+ "rust_xlsxwriter",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "uuid",
+ "webpki-roots",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3187,41 +3222,6 @@ dependencies = [
  "smallvec",
  "tagptr",
  "uuid",
-]
-
-[[package]]
-name = "mongo-bongo"
-version = "0.2.2"
-dependencies = [
- "aes-gcm 0.10.3",
- "argon2 0.5.3",
- "base64 0.22.1",
- "chrono",
- "deadpool-postgres",
- "futures",
- "json5",
- "keyring",
- "mongodb",
- "regex",
- "reqwest 0.12.28",
- "russh",
- "rust_xlsxwriter",
- "rustls",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "thiserror 2.0.18",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "uuid",
- "webpki-roots",
 ]
 
 [[package]]

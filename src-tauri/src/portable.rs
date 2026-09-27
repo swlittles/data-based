@@ -58,7 +58,10 @@ pub struct KdfParams {
 #[serde(rename_all = "camelCase")]
 pub struct ExportFile {
     /// Format version - bumped if the shape changes.
-    pub mongo_bongo_export: u32,
+    /// Serialized as `dataBasedExport`; files from before the rename carry
+    /// `mongoBongoExport` and still import.
+    #[serde(alias = "mongoBongoExport")]
+    pub data_based_export: u32,
     pub encrypted: bool,
     pub exported_at: String,
     /// Present when `!encrypted`.
@@ -126,7 +129,7 @@ pub fn build_export(
             })
             .collect();
         let file = ExportFile {
-            mongo_bongo_export: FORMAT_VERSION,
+            data_based_export: FORMAT_VERSION,
             encrypted: false,
             exported_at,
             connections: Some(conns),
@@ -161,7 +164,7 @@ pub fn build_export(
         .map_err(|_| AppError::Storage("export encryption failed".into()))?;
 
     let file = ExportFile {
-        mongo_bongo_export: FORMAT_VERSION,
+        data_based_export: FORMAT_VERSION,
         encrypted: true,
         exported_at,
         connections: None,
@@ -174,11 +177,11 @@ pub fn build_export(
 
 fn parse_file(content: &str) -> AppResult<ExportFile> {
     let file: ExportFile = serde_json::from_str(content)
-        .map_err(|_| AppError::Other("not a valid Mongo Bongo connections export".into()))?;
-    if file.mongo_bongo_export != FORMAT_VERSION {
+        .map_err(|_| AppError::Other("not a valid Data Based connections export".into()))?;
+    if file.data_based_export != FORMAT_VERSION {
         return Err(AppError::Other(format!(
             "unsupported export version {}",
-            file.mongo_bongo_export
+            file.data_based_export
         )));
     }
     Ok(file)

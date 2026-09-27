@@ -5,6 +5,6 @@
   <!-- Shown once when exporting a .numbers file: the app asks Numbers to
        convert the .xlsx it wrote. Without this key macOS denies the request. -->
   <key>NSAppleEventsUsageDescription</key>
-  <string>Mongo Bongo asks Numbers to save exported data as a .numbers file.</string>
+  <string>Data Based asks Numbers to save exported data as a .numbers file.</string>
 </dict>
 </plist>

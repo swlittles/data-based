@@ -41,7 +41,7 @@ export function showUpdateToast(version: string, onInstall: () => void): void {
           <ArrowUpCircle className="h-5 w-5" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-semibold">Mongo Bongo {version} is available</p>
+          <p className="text-[13px] font-semibold">Data Based {version} is available</p>
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-text-2">
             Signed build from GitHub Releases - installs in the background.
           </p>
@@ -67,7 +67,7 @@ export function showUpdateToast(version: string, onInstall: () => void): void {
       </div>
     ),
     {
-      id: "mongo-bongo-update",
+      id: "data-based-update",
       duration: 30_000,
       unstyled: true,
       style: { background: "transparent", border: "none", boxShadow: "none", padding: 0 },
@@ -76,7 +76,7 @@ export function showUpdateToast(version: string, onInstall: () => void): void {
 }
 
 async function install(update: Update): Promise<void> {
-  const id = toast.loading(`Downloading Mongo Bongo ${update.version}...`);
+  const id = toast.loading(`Downloading Data Based ${update.version}...`);
   try {
     let total = 0;
     let received = 0;
@@ -86,7 +86,7 @@ async function install(update: Update): Promise<void> {
       } else if (event.event === "Progress" && total > 0) {
         received += event.data.chunkLength;
         toast.loading(
-          `Downloading Mongo Bongo ${update.version}... ${Math.min(100, Math.round((received / total) * 100))}%`,
+          `Downloading Data Based ${update.version}... ${Math.min(100, Math.round((received / total) * 100))}%`,
           { id }
         );
       }

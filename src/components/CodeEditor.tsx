@@ -104,7 +104,7 @@ export function CodeEditor({
         height={height === "100%" ? fillPx! : height}
         path={path}
         language={language}
-        theme="mongo-bongo"
+        theme="data-based"
         value={value}
         onChange={(v) => onChange?.(v ?? "")}
         onMount={handleMount}

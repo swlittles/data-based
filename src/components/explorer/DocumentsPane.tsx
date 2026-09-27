@@ -280,7 +280,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
               <Trash2 />
               <div>
                 The selected {t.docs} are permanently removed from the {t.coll}. It cannot be undone
-                from Mongo Bongo.
+                from Data Based.
               </div>
             </div>
             {offerBackup && (
@@ -315,7 +315,7 @@ export function DocumentsPane({ tab }: { tab: Tab }) {
               <Trash2 />
               <div>
                 <span className="mono">{confirmOne ? rowLabel(confirmOne, ident) : ""}</span> will be removed.
-                It cannot be undone from Mongo Bongo.
+                It cannot be undone from Data Based.
               </div>
             </div>
           </DialogBody>

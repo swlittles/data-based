@@ -7,7 +7,7 @@
 //!
 //! Host keys: the server key must match `~/.ssh/known_hosts` when the host is
 //! listed there. Unknown hosts are trusted on first use and remembered in
-//! Mongo Bongo's own `known_hosts` file (we never write to the user's ~/.ssh). A
+//! Data Based's own `known_hosts` file (we never write to the user's ~/.ssh). A
 //! changed key is always a hard error.
 
 use std::path::PathBuf;
@@ -122,13 +122,13 @@ impl client::Handler for HostKeyCheck {
                     self.host
                 ))
             }
-            // No ~/.ssh or unreadable file: fall through to Mongo Bongo's own list.
+            // No ~/.ssh or unreadable file: fall through to Data Based's own list.
             Err(_) => {}
         }
         match keys::check_known_hosts_path(&self.host, self.port, key, &self.app_known_hosts) {
             Ok(true) => Ok(true),
             Err(keys::Error::KeyChanged { .. }) => reject(format!(
-                "the SSH host key for {} changed since Mongo Bongo first connected - refusing to connect",
+                "the SSH host key for {} changed since Data Based first connected - refusing to connect",
                 self.host
             )),
             // Unknown host: trust on first use and remember it.
