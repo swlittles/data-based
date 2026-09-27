@@ -14,7 +14,7 @@ use crate::error::{AppError, AppResult};
 
 const API_BASE: &str = "https://openrouter.ai/api/v1";
 const KEY_FILE: &str = "ai_key.json";
-const REFERER: &str = "https://github.com/swlittles/mongo-bongo";
+const REFERER: &str = "https://github.com/swlittles/data-based";
 const TITLE: &str = "Mongo Bongo";
 const CHAT_TIMEOUT: Duration = Duration::from_secs(180);
 const META_TIMEOUT: Duration = Duration::from_secs(20);

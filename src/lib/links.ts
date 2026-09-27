@@ -1,8 +1,8 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 /** Canonical project links. */
-export const REPO_URL = "https://github.com/swlittles/mongo-bongo";
-export const REPO_LABEL = "github.com/swlittles/mongo-bongo";
+export const REPO_URL = "https://github.com/swlittles/data-based";
+export const REPO_LABEL = "github.com/swlittles/data-based";
 
 /**
  * Open a URL in the user's default browser. Uses the Tauri opener plugin in the

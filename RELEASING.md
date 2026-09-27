@@ -60,7 +60,7 @@ gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD < ~/.tauri/mongo-bongo.key.pass
 - `tauri-apps/tauri-action` aggregates them into `latest.json` on the
   release.
 - The app checks
-  `https://github.com/swlittles/mongo-bongo/releases/latest/download/latest.json`
+  `https://github.com/swlittles/data-based/releases/latest/download/latest.json`
   on startup (production builds only), verifies the signature against the
   embedded pubkey, downloads, installs, and relaunches.
 
